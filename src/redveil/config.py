@@ -220,6 +220,27 @@ class ReportingConfig(BaseModel):
     redact_secrets: bool = True
 
 
+class EnvironmentConfig(BaseModel):
+    """Environment awareness — affects confidence scoring.
+
+    The operator declares what kind of environment the target is in.
+    Findings on noisy environments (WAF, production) need more evidence
+    to reach the same confidence as findings in clean environments (dev).
+
+    Multiple values can be specified comma-separated:
+        environment: "production,waf"
+
+    Valid values: dev, staging, production, cdn, waf, proxy, load_balancer
+    Aliases: prod→production, qa→staging, localhost→dev
+    """
+    environments: str = "production"
+
+    @field_validator("environments")
+    @classmethod
+    def _validate(cls, v: str) -> str:
+        return v.lower().strip()
+
+
 class RedVeilConfig(BaseSettings):
     """Root config. Can be loaded from YAML/JSON via pydantic-settings.
 
@@ -242,6 +263,7 @@ class RedVeilConfig(BaseSettings):
     authorization: AuthorizationConfig = Field(default_factory=AuthorizationConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     reporting: ReportingConfig = Field(default_factory=ReportingConfig)
+    environment: EnvironmentConfig = Field(default_factory=EnvironmentConfig)
     profile: SafetyProfile = SafetyProfile.PASSIVE
 
     @classmethod
