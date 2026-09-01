@@ -18,7 +18,7 @@ web vulnerability scanner. find vulns, validate safely, get a report you can act
 > pip install redveil
 > ```
 >
-> See [USER_GUIDE.md#install](USER_GUIDE.md#install) for distro-specific
+> See [USER_GUIDE.md#install](https://github.com/FitzyPrjkt/Redveil/blob/main/USER_GUIDE.md#install) for distro-specific
 > commands (apt, dnf, pacman, zypper, brew, etc.).
 
 <!-- Badges -->
@@ -27,7 +27,7 @@ web vulnerability scanner. find vulns, validate safely, get a report you can act
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/FitzyPrjkt/Redveil/blob/main/LICENSE)
 [![Tests](https://img.shields.io/badge/tests-1101%20passing-brightgreen.svg)](https://github.com/FitzyPrjkt/Redveil/actions)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
-[![Security: tiered gate](https://img.shields.io/badge/destructive%20ops-tiered%20confirm-orange.svg)](SECURITY.md)
+[![Security: tiered gate](https://img.shields.io/badge/destructive%20ops-tiered%20confirm-orange.svg)](https://github.com/FitzyPrjkt/Redveil/blob/main/SECURITY.md)
 [![Negative testing](https://img.shields.io/badge/FP%20testing-secure%20fixture-green.svg)](tests/test_negative_testing.py)
 [![Audit log](https://img.shields.io/badge/audit%20log-per%20action%20decision-blue.svg)](src/redveil/validation/gate.py)
 
@@ -127,7 +127,7 @@ runtime assertions in each check verify these constraints on every import. the t
 
 **you are responsible for authorization.** redveil includes guards but they only matter if you actually have permission to test the target.
 
-see [SECURITY.md](SECURITY.md) for the full safety model and how to report issues.
+see [SECURITY.md](https://github.com/FitzyPrjkt/Redveil/blob/main/SECURITY.md) for the full safety model and how to report issues.
 
 ## CLI
 
@@ -242,7 +242,7 @@ register in `pyproject.toml`:
 my-check = "my_pkg.checks:MyCheck"
 ```
 
-see [CONTRIBUTING.md](CONTRIBUTING.md) for the full plugin spec.
+see [CONTRIBUTING.md](https://github.com/FitzyPrjkt/Redveil/blob/main/CONTRIBUTING.md) for the full plugin spec.
 
 ## files
 
@@ -271,7 +271,7 @@ see [CONTRIBUTING.md](CONTRIBUTING.md) for the full plugin spec.
 | Root cause | one finding per endpoint | clustered across endpoints with same root cause |
 | Destructive | implicit (run anyway) | blocked by default. tiered confirmation L1-L6. no Y-to-all. |
 
-see [USER_GUIDE.md](USER_GUIDE.md) and [docs/architecture.md](docs/architecture.md) for details.
+see [USER_GUIDE.md](https://github.com/FitzyPrjkt/Redveil/blob/main/USER_GUIDE.md) and [docs/architecture.md](https://github.com/FitzyPrjkt/Redveil/blob/main/docs/architecture.md) for details.
 
 ## license
 
