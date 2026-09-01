@@ -2,6 +2,28 @@
 
 web vulnerability scanner. find vulns, validate safely, get a report you can actually send to a dev team.
 
+---
+
+> ## ⚠️ DANGER ZONE — DWYOR (Do With Your Own Risk)
+>
+> **READ THIS BEFORE USING REDVEIL.**
+>
+> Redveil is intended for **authorized security testing only**.
+>
+> - ✅ You **own** the system, OR
+> - ✅ You have **explicit written permission** to test it
+>
+> If neither applies: **DO NOT USE THIS TOOL.**
+>
+> The authors are not responsible for misuse, damage, data loss, or
+> unauthorized activity resulting from the use of this software.
+>
+> **You** are responsible for legal and ethical compliance.
+>
+> See [DWYOR.md](DWYOR.md) for the full statement.
+
+---
+
 > ⚠️ **Installation requires a virtual environment or `pipx`.**
 >
 > Modern Linux distros (Debian 12+, Ubuntu 23.04+, Fedora, etc.) enforce
