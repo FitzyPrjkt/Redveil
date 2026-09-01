@@ -100,6 +100,10 @@ class CheckMeta:
     version: str = "0.1.0"
     description: str = ""
     references: list[str] | None = None  # CWE IDs, OWASP links, etc.
+    # Risk level of the actions this check performs. Used by ActionGate
+    # to decide whether user confirmation is required. Defaults to NONE
+    # for passive checks. Active checks should declare explicitly.
+    max_risk: str = "none"   # "none" | "low" | "medium" | "high" | "blocked"
 
 
 @dataclass
