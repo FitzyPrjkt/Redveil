@@ -238,6 +238,51 @@ class SSRFCheck(Check):
             if bad in oob_domain.lower():
                 return []
 
+        # Optional ActionGate: present the OOB probe plan to the user.
+        # The gate only blocks MEDIUM+ in interactive mode. OOB SSRF probes
+        # are LOW risk (no internal IP targets, no metadata endpoints) so
+        # this is auto-approved.
+        from redveil.validation.risk import ActionPlan, Risk
+        plan = ActionPlan(
+            action_id="ssrf-oob-probe",
+            description=(
+                "Send SSRF OOB (out-of-band) callback probes via the "
+                "operator-configured OOB domain. No internal IP targets, "
+                "no metadata endpoints. ONLY uses the operator-configured "
+                "out_of_band_callback_domain (no 10.0.0.0/8, "
+                "192.168.0.0/16, 127.0.0.0/8, 169.254.0.0/16, ::1, AWS "
+                "metadata). No direct exploitation — just observes whether "
+                "the server fetches the URL. Bounded outbound traffic."
+            ),
+            risk=Risk.LOW,
+            target=f"{self.deps.config.target.base_url}/",
+            purpose=(
+                "Detect Server-Side Request Forgery by checking if the "
+                "server fetches operator-configured callback URLs."
+            ),
+            expected_effect=(
+                "200 OK responses to the probe; OOB callback hits recorded "
+                "in operator's OOB log."
+            ),
+            potential_side_effects=(
+                "Logged in server access log.",
+                "Outbound HTTP/HTTPS requests to operator's OOB domain "
+                "(DNS lookup + connection).",
+                "May trigger WAF if present.",
+            ),
+            max_requests=len(_URL_PARAM_NAMES) * 2 + 5,
+            timeout_seconds=10.0,
+        )
+        if self.deps.gate is not None:
+            decision = self.deps.gate.ask(
+                plan,
+                allow_destructive=self.deps.config.authorization.allow_destructive,
+            )
+            if not decision:
+                # User denied or auto-denied (destructive in non-interactive).
+                # In this case, deny is the right behavior.
+                return []
+
         base = str(self.deps.config.target.base_url).rstrip("/")
         candidates: list[dict[str, Any]] = []
 

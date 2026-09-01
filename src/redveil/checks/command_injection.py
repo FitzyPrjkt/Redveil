@@ -94,6 +94,48 @@ class CommandInjectionCheck(Check):
         if not self.deps.config.authorization.acknowledged_safety_terms:
             return []
 
+        # Optional ActionGate: present the sleep-probe plan to the user.
+        # The gate only blocks MEDIUM+ in interactive mode. Sleep probes are
+        # LOW risk (only `sleep N` payloads, no destructive commands), so this
+        # is auto-approved. Per-parameter baseline + controlled comparison.
+        # Only GET requests, no body modification. Capped at sleep 3-5s max.
+        # No shell metacharacters that do anything besides delay.
+        from redveil.validation.risk import ActionPlan, Risk
+        plan = ActionPlan(
+            action_id="cmdi-time-based-probe",
+            description=(
+                "Send time-based command-injection probes (only `sleep N` payloads, "
+                "capped at sleep 3-5 seconds) to base URL parameters and measure "
+                "response time. Per-parameter baseline + controlled comparison. "
+                "Only GET requests, no body modification. No shell metacharacters "
+                "that do anything besides delay. No destructive commands — only "
+                "the sleep binary."
+            ),
+            risk=Risk.LOW,
+            target=str(self.deps.config.target.base_url).rstrip("/") + "/",
+            purpose="Detect command injection by measuring response time after sleep payloads.",
+            expected_effect=(
+                "200 OK responses; delayed (>1s) responses when sleep-equivalent "
+                "payload is interpreted by a shell."
+            ),
+            potential_side_effects=(
+                "Logged in server access log.",
+                "May trigger WAF if present.",
+                "Slight increase in response time for affected requests.",
+            ),
+            max_requests=len(_DELAY_PAYLOADS) * len(_COMMON_PARAM_NAMES),
+            timeout_seconds=10.0,
+            destructive=False,
+        )
+        if self.deps.gate is not None:
+            decision = self.deps.gate.ask(
+                plan,
+                allow_destructive=self.deps.config.authorization.allow_destructive,
+            )
+            if not decision:
+                # User denied or auto-denied (destructive in non-interactive).
+                return []
+
         base = str(self.deps.config.target.base_url).rstrip("/")
         candidates: list[dict[str, Any]] = []
         endpoint = join_url(base, "/")

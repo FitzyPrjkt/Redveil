@@ -80,6 +80,46 @@ class TimeBasedSQLiCheck(Check):
         if not self.deps.config.authorization.acknowledged_safety_terms:
             return []
 
+        # Optional ActionGate: present the time-based probe plan to the user.
+        # The gate only blocks MEDIUM+ in interactive mode. Time-based
+        # canary probes (SLEEP/pg_sleep/WAITFOR DELAY) are LOW risk
+        # (no data extraction, no SELECT/UNION/OR tautology) so this is
+        # auto-approved. Only GET requests; no body modification; bounded
+        # by max_requests and timeout.
+        from redveil.validation.risk import ActionPlan, Risk
+        plan = ActionPlan(
+            action_id="sqli-time-based-probe",
+            description=(
+                "Send time-based blind SQLi probes (SLEEP, pg_sleep, "
+                "WAITFOR DELAY) to the base URL parameters and measure "
+                "response time. Per-parameter baseline + controlled "
+                "timing comparison. Bounded by max_requests and "
+                "timeout. Only GET requests, no body modification. "
+                "No data extraction, no SELECT/UNION/OR tautology."
+            ),
+            risk=Risk.LOW,
+            target=str(self.deps.config.target.base_url).rstrip("/") + "/",
+            purpose="Detect time-based blind SQL injection by measuring response time differences.",
+            expected_effect="200 OK responses; slow responses (>1s) when SLEEP-equivalent payload is processed.",
+            potential_side_effects=(
+                "Logged in server access log.",
+                "May trigger WAF if present.",
+                "Slight increase in response time for the affected request.",
+            ),
+            max_requests=len(_DELAY_PAYLOADS) * len(_COMMON_PARAM_NAMES[:8]),
+            timeout_seconds=10.0,
+            destructive=False,
+        )
+        if self.deps.gate is not None:
+            decision = self.deps.gate.ask(
+                plan,
+                allow_destructive=self.deps.config.authorization.allow_destructive,
+            )
+            if not decision:
+                # User denied or auto-denied (destructive in non-interactive).
+                # In this case, deny is the right behavior.
+                return []
+
         base = str(self.deps.config.target.base_url).rstrip("/")
         candidates: list[dict[str, Any]] = []
 

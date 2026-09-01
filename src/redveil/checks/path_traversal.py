@@ -92,6 +92,48 @@ class PathTraversalCheck(Check):
         if not self.deps.config.authorization.acknowledged_safety_terms:
             return []
 
+        # Optional ActionGate: present the path-traversal canary probe plan to the user.
+        # The gate only blocks MEDIUM+ in interactive mode. Canary probes are LOW
+        # risk (only random canary filenames, no real file paths) so this is
+        # auto-approved.
+        from redveil.validation.risk import ActionPlan, Risk
+        plan = ActionPlan(
+            action_id="path-traversal-canary-probe",
+            description=(
+                "Send path-traversal probes using unique random canary "
+                "filenames (../canary, ../../canary, etc.) to file-serving "
+                "parameters. No real file paths are read. Per parameter: 1 "
+                "baseline request + N traversal sequences. Only sends GET "
+                "requests with query parameters. No file read, no body "
+                "modification."
+            ),
+            risk=Risk.LOW,
+            target=f"{self.deps.config.target.base_url}/",
+            purpose=(
+                "Detect path traversal by observing whether canary filenames "
+                "produce different responses than baseline."
+            ),
+            expected_effect=(
+                "Baseline 404 + canary 200/404 indicates the parameter is "
+                "reflected but traversal is filtered. Same 404 for both "
+                "indicates no traversal."
+            ),
+            potential_side_effects=(
+                "Logged in server access log.",
+                "Canary file request may be logged (the file does not exist).",
+            ),
+            max_requests=len(_TRAVERSAL_SEQUENCES) * len(_FILE_PARAMS),
+            timeout_seconds=10.0,
+        )
+        if self.deps.gate is not None:
+            decision = self.deps.gate.ask(
+                plan,
+                allow_destructive=self.deps.config.authorization.allow_destructive,
+            )
+            if not decision:
+                # User denied or auto-denied (destructive in non-interactive).
+                return []
+
         base = str(self.deps.config.target.base_url).rstrip("/")
         candidates: list[dict[str, Any]] = []
 

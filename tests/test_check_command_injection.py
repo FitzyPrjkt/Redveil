@@ -16,15 +16,29 @@ def _resp(body: str = "", status: int = 200, elapsed_ms: float = 10.0):
     return Response(request_id="r1", status_code=status, headers={}, body=body, elapsed_ms=elapsed_ms)
 
 
-def _bind(check, side_effects, active: bool = True, ack: bool = True):
+def _bind(check, side_effects, active: bool = True, ack: bool = True,
+          allow_destructive: bool = False, gate_approved: bool = True):
     mock_http = MagicMock()
     mock_http._scope = MagicMock()
     cfg = MagicMock()
     cfg.target.base_url = "https://example.com"
     cfg.authorization.active_testing = active
     cfg.authorization.acknowledged_safety_terms = ack
+    cfg.authorization.allow_destructive = allow_destructive
+    cfg.authorization.out_of_band_callback_domain = None
     mock_http.send = AsyncMock(side_effect=side_effects)
-    deps = CheckDependencies(http=mock_http, scope=mock_http._scope, config=cfg, context=MagicMock())
+    # Mock the gate
+    mock_gate = MagicMock()
+    decision = MagicMock()
+    decision.approved = gate_approved
+    decision.plan = MagicMock()
+    decision.reason = "test-mock"
+    decision.__bool__ = lambda self: self.approved
+    mock_gate.ask.return_value = decision
+    deps = CheckDependencies(
+        http=mock_http, scope=mock_http._scope, config=cfg, context=MagicMock(),
+        gate=mock_gate,
+    )
     check.bind(deps)
     return mock_http
 
