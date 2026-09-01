@@ -109,6 +109,17 @@ class AuthorizationConfig(BaseModel):
     # in non-interactive mode. They require explicit user confirmation
     # via stdin, and in non-interactive mode the default is DENY.
     allow_destructive: bool = False
+    # Maximum destructive level the operator allows. Plans above this
+    # level are denied. Default: 2 (data_modification, which means
+    # rm -rf, DROP TABLE, persistence, etc. are blocked by default).
+    # Levels:
+    #   1 = data_exfiltration   (read sensitive files)
+    #   2 = data_modification   (UPDATE/INSERT)
+    #   3 = data_destruction    (rm -rf, DROP TABLE)  ← needs CONFIRM
+    #   4 = persistence         (crontab, systemd)   ← needs CONFIRM
+    #   5 = lateral_movement    (SSH keys)           ← needs CONFIRM
+    #   6 = takeover            (full RCE)           ← needs CONFIRM
+    max_destructive_level: int = 2
 
     @model_validator(mode="after")
     def _destructive_requires_full_acknowledgement(self) -> AuthorizationConfig:
@@ -124,6 +135,27 @@ class AuthorizationConfig(BaseModel):
                     "authorization.acknowledged_safety_terms=true"
                 )
         return self
+
+    @field_validator("max_destructive_level", mode="before")
+    @classmethod
+    def _validate_level(cls, v) -> int:
+        # Accept short form "L1".."L6" (case-insensitive) or the integer
+        # value. The short form is convenient for CLI flags and YAML.
+        if isinstance(v, str):
+            s = v.strip().upper()
+            if s.startswith("L") and s[1:].isdigit():
+                v = int(s[1:])
+            elif s.isdigit():
+                v = int(s)
+            else:
+                raise ValueError(
+                    f"max_destructive_level must be 1-6 or L1-L6, got {v!r}"
+                )
+        if v < 1 or v > 6:
+            raise ValueError(
+                f"max_destructive_level must be 1-6, got {v}"
+            )
+        return v
 
     @model_validator(mode="after")
     def _active_requires_acknowledgement(self) -> AuthorizationConfig:

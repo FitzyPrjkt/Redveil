@@ -35,6 +35,48 @@ class Risk(IntEnum):
     BLOCKED = 99  # sentinel: never execute, even with explicit user approval
 
 
+class DestructiveLevel(IntEnum):
+    """Granular scale of destructive potential (1-6).
+
+    Independent of Risk. A Risk.MEDIUM action can be DestructiveLevel 3
+    (e.g., BOLA on a delete endpoint). The level is shown to the user so
+    they know exactly what category of destruction they're authorizing.
+    """
+    DATA_EXFILTRATION = 1     # read sensitive files, dump DB
+    DATA_MODIFICATION = 2     # UPDATE/INSERT rows, change config
+    DATA_DESTRUCTION = 3      # DROP TABLE, rm -rf, page defacement
+    PERSISTENCE = 4           # crontab, systemd, useradd, webshell
+    LATERAL_MOVEMENT = 5      # SSH keys, network scan, internal pivot
+    TAKEOVER = 6              # full account takeover, complete RCE
+
+    @property
+    def label(self) -> str:
+        return self.name.replace("_", " ").title()
+
+    @property
+    def requires_typed_confirmation(self) -> bool:
+        """Level 3+ requires the user to TYPE the action word to confirm.
+
+        Below level 3: simple Y/N is enough.
+        Level 3-4: must type a confirmation word from the prompt.
+        Level 5-6: must type the EXACT action word from the plan.
+        """
+        return self.value >= 3
+
+    @property
+    def confirmation_prompt(self) -> str:
+        """The instruction shown to the user for confirmation."""
+        if self.value == 3:
+            return "Type CONFIRM to proceed:"
+        if self.value == 4:
+            return "Type CONFIRM-LEVEL-4 to proceed:"
+        if self.value == 5:
+            return "Type CONFIRM-LEVEL-5 to proceed:"
+        if self.value == 6:
+            return "Type CONFIRM-LEVEL-6 to proceed:"
+        return ""
+
+
 @dataclass
 class ActionPlan:
     """Structured description of an action a check wants to perform.
@@ -52,8 +94,16 @@ class ActionPlan:
     # Hard limits the orchestrator enforces regardless of approval
     max_requests: int = 1
     timeout_seconds: float = 10.0
-    # Destructive operations: never executed, even with approval
+    # Destructive operations: never executed without explicit unlock
     destructive: bool = False
+    # Granular destructive level (1-6). When destructive=True, this
+    # tells the user exactly what kind of destruction they're authorizing.
+    # Level 3+ requires typed confirmation (not just Y/N).
+    destructive_level: DestructiveLevel | None = None
+    # The exact "action word" the user must type to confirm at level 3+.
+    # E.g. "rm-rf" for a deletion, "drop-table" for SQL drop, etc.
+    # If None, the gate uses a generic CONFIRM string.
+    confirm_word: str = ""
     # Additional metadata for the gate
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -97,6 +147,11 @@ class ActionPlan:
             lines.append("Potential side effects:")
             for s in self.potential_side_effects:
                 lines.append(f"  - {s}")
+        if self.destructive and self.destructive_level is not None:
+            lines.append("")
+            lines.append(f"⚠ DESTRUCTIVE LEVEL: {self.destructive_level.value} — {self.destructive_level.label}")
+            if self.destructive_level.requires_typed_confirmation:
+                lines.append(f"⚠ {self.destructive_level.confirmation_prompt}")
         lines.append("")
         lines.append("Proceed with this validation? [y/N]")
         return "\n".join(lines)

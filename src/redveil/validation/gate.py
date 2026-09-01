@@ -76,19 +76,20 @@ class ActionGate:
         # Log of all decisions (for audit)
         self.history: list[GateDecision] = []
 
-    def ask(self, plan: ActionPlan, allow_destructive: bool = False) -> GateDecision:
+    def ask(self, plan: ActionPlan, allow_destructive: bool = False,
+           max_destructive_level: int = 2) -> GateDecision:
         """Ask the gate about an action plan. Returns GateDecision.
 
         The decision is also appended to self.history for audit.
 
         Destructive actions (destructive=True or Risk.BLOCKED):
-        - allow_destructive=False: ALWAYS denied, regardless of mode
-        - allow_destructive=True: requires per-action user confirmation
-          in INTERACTIVE mode. In NON_INTERACTIVE mode, ALWAYS denied
-          (no batch approval — every destructive action is denied by
-          default unless the user explicitly enables a per-action
-          confirmation flag, which we intentionally don't expose to
-          prevent accidental Y-to-all approvals).
+        - allow_destructive=False: ALWAYS denied
+        - allow_destructive=True but level > max_destructive_level: denied
+        - allow_destructive=True and level <= max_destructive_level:
+          requires per-action user confirmation
+          - Level 1-2: simple Y/N
+          - Level 3+: user must TYPE the action word (or CONFIRM for
+            generic plans). This prevents accidental Y presses.
 
         MEDIUM/HIGH (non-destructive) risk:
         - NON_INTERACTIVE: auto-approve
@@ -110,25 +111,37 @@ class ActionGate:
                 )
                 self._log_decision(decision)
                 return decision
-            # allow_destructive=True: still require per-action user YES
-            # We do NOT auto-approve even in non-interactive mode. Every
-            # destructive action needs explicit user input. The only way
-            # to bypass is to set a separate per-action confirm flag
-            # (intentionally not exposed here to prevent Y-to-all mistakes).
+            # Check the destructive level against the operator's max
+            level = (
+                int(plan.destructive_level.value)
+                if plan.destructive_level is not None
+                else 3  # default to "data destruction" if unspecified
+            )
+            if level > max_destructive_level:
+                decision = GateDecision(
+                    approved=False,
+                    plan=plan,
+                    reason=(
+                        f"destructive level {level} exceeds operator's "
+                        f"max_destructive_level ({max_destructive_level})"
+                    ),
+                )
+                self._log_decision(decision)
+                return decision
+            # allow_destructive=True + level <= max: per-action approval
             if self.mode == GateMode.NON_INTERACTIVE:
                 decision = GateDecision(
                     approved=False,
                     plan=plan,
                     reason=(
-                        "destructive action in non-interactive mode: "
-                        "denied by default (use --interactive or set "
-                        "GATE_CONFIRM_DESTRUCTIVE_PER_ACTION=true per call)"
+                        f"destructive action level {level} in non-interactive "
+                        f"mode: denied by default (use --interactive)"
                     ),
                 )
                 self._log_decision(decision)
                 return decision
-            # INTERACTIVE: prompt per action
-            return self._prompt_user(plan, emphasize_destructive=True)
+            # INTERACTIVE: prompt per action with tiered confirmation
+            return self._prompt_user_tiered(plan)
 
         # Non-destructive path
         if self.mode == GateMode.NON_INTERACTIVE:
@@ -149,8 +162,6 @@ class ActionGate:
             self._log_decision(decision)
             return decision
 
-        # Auto-approvable risk in interactive mode: still log and approve
-        # so the user isn't prompted for trivial actions.
         if plan.is_safe_to_auto_approve():
             decision = GateDecision(
                 approved=True,
@@ -160,39 +171,86 @@ class ActionGate:
             self._log_decision(decision)
             return decision
 
-        # MEDIUM/HIGH in interactive mode: prompt
         return self._prompt_user(plan, emphasize_destructive=False)
 
     def _prompt_user(self, plan: ActionPlan, emphasize_destructive: bool = False) -> GateDecision:
-        """Prompt the user. Default answer is N (deny).
-
-        For destructive actions, we require a longer, more explicit
-        confirmation string ("DESTROY" or similar) to prevent accidental
-        Y presses. The user has to read the plan and type the exact
-        confirmation word.
-        """
+        """Standard Y/N prompt for non-destructive MEDIUM/HIGH actions."""
         text = plan.render_for_user()
-        if emphasize_destructive:
-            text += "\n" + (
-                "DESTRUCTIVE ACTION: type 'I-accept-risk' to confirm, "
-                "anything else to deny:"
-            )
         self._stdout.write(text + "\n")
         self._stdout.flush()
         try:
             response = self._stdin.readline().strip()
         except (EOFError, KeyboardInterrupt):
             response = ""
-        if emphasize_destructive:
-            approved = response == "I-accept-risk"
-            reason_token = "explicit 'I-accept-risk' for destructive"
-        else:
-            approved = response.lower() in ("y", "yes")
-            reason_token = "approved" if approved else "denied"
+        approved = response.lower() in ("y", "yes")
+        reason_token = "approved" if approved else "denied"
         decision = GateDecision(
             approved=approved,
             plan=plan,
             reason=f"user {reason_token} interactively",
+        )
+        self._log_decision(decision)
+        return decision
+
+    def _prompt_user_tiered(self, plan: ActionPlan) -> GateDecision:
+        """Tiered confirmation for destructive actions.
+
+        - Level 1-2: simple Y/N
+        - Level 3-4: user must type CONFIRM or the plan's confirm_word
+        - Level 5-6: same, but the prompt is more prominent
+
+        The plan's confirm_word (e.g., "rm-rf", "drop-table") makes
+        the user consciously type the action. This prevents accidental
+        Y presses and forces the user to acknowledge what they're doing.
+        """
+        level = plan.destructive_level
+        level_value = level.value if level else 3
+        text = plan.render_for_user()
+        self._stdout.write(text + "\n")
+        self._stdout.flush()
+
+        # Level 1-2: standard Y/N
+        if level_value <= 2:
+            try:
+                response = self._stdin.readline().strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                response = ""
+            approved = response in ("y", "yes")
+            reason_token = "approved" if approved else "denied"
+            decision = GateDecision(
+                approved=approved, plan=plan,
+                reason=f"destructive level {level_value}: user {reason_token}",
+            )
+            self._log_decision(decision)
+            return decision
+
+        # Level 3+: typed confirmation
+        # User must type either:
+        # - the plan's confirm_word (e.g., "rm-rf", "drop-table"), OR
+        # - the level-specific CONFIRM string from DestructiveLevel
+        expected_words = set()
+        if plan.confirm_word:
+            expected_words.add(plan.confirm_word)
+        if level:
+            # level 3: "CONFIRM"
+            # level 4: "CONFIRM-LEVEL-4"
+            # etc.
+            expected_words.add(level.confirmation_prompt.replace("Type ", "").replace(" to proceed:", ""))
+
+        try:
+            response = self._stdin.readline().strip()
+        except (EOFError, KeyboardInterrupt):
+            response = ""
+
+        approved = response in expected_words
+        if approved:
+            reason = f"typed confirmation '{response}' for destructive level {level_value}"
+        else:
+            reason = (
+                f"denied: expected one of {sorted(expected_words)!r}, got {response!r}"
+            )
+        decision = GateDecision(
+            approved=approved, plan=plan, reason=reason,
         )
         self._log_decision(decision)
         return decision

@@ -166,7 +166,7 @@ def test_gate_blocks_destructive_in_non_interactive_even_with_unlock():
         destructive=True,
     )
     # allow_destructive=True but mode is non-interactive → still denied
-    decision = gate.ask(plan, allow_destructive=True)
+    decision = gate.ask(plan, allow_destructive=True, max_destructive_level=6)
     assert not decision
     assert "non-interactive" in decision.reason
 
@@ -183,12 +183,12 @@ def test_gate_destructive_requires_explicit_i_accept_risk():
         target="https://t.com", purpose="x", expected_effect="x",
         destructive=True,
     )
-    decision = gate.ask(plan, allow_destructive=True)
+    decision = gate.ask(plan, allow_destructive=True, max_destructive_level=6)
     assert not decision  # 'y' alone is not enough
 
 
 def test_gate_destructive_approved_with_explicit_string():
-    """Destructive in interactive mode approved only with 'I-accept-risk'."""
+    """Destructive in interactive mode approved only with the typed confirmation."""
     fake_stdin = io.StringIO("I-accept-risk\n")
     fake_stdout = io.StringIO()
     gate = ActionGate(
@@ -197,9 +197,9 @@ def test_gate_destructive_approved_with_explicit_string():
     plan = ActionPlan(
         action_id="x", description="x", risk=Risk.MEDIUM,
         target="https://t.com", purpose="x", expected_effect="x",
-        destructive=True,
+        destructive=True, confirm_word="I-accept-risk",
     )
-    decision = gate.ask(plan, allow_destructive=True)
+    decision = gate.ask(plan, allow_destructive=True, max_destructive_level=6)
     assert decision
 
 
@@ -212,12 +212,12 @@ def test_gate_no_y_to_all():
     )
     plan1 = ActionPlan(action_id="1", description="d1", risk=Risk.HIGH,
                        target="https://t.com", purpose="x", expected_effect="x",
-                       destructive=True)
+                       destructive=True, confirm_word="I-accept-risk")
     plan2 = ActionPlan(action_id="2", description="d2", risk=Risk.HIGH,
                        target="https://t.com", purpose="x", expected_effect="x",
-                       destructive=True)
-    d1 = gate.ask(plan1, allow_destructive=True)
-    d2 = gate.ask(plan2, allow_destructive=True)
+                       destructive=True, confirm_word="I-accept-risk")
+    d1 = gate.ask(plan1, allow_destructive=True, max_destructive_level=6)
+    d2 = gate.ask(plan2, allow_destructive=True, max_destructive_level=6)
     assert d1  # first approved
     assert not d2  # second denied (user said n)
     # The gate prompts for BOTH, no batch approval
@@ -244,7 +244,7 @@ def test_gate_blocks_risk_blocked_sentinel():
     gate = ActionGate(mode=GateMode.NON_INTERACTIVE)
     plan = ActionPlan(action_id="x", description="x", risk=Risk.BLOCKED,
                       target="https://t.com", purpose="x", expected_effect="x")
-    decision = gate.ask(plan, allow_destructive=True)
+    decision = gate.ask(plan, allow_destructive=True, max_destructive_level=6)
     assert not decision
 
 
