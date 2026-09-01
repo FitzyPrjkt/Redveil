@@ -128,8 +128,8 @@ def test_findings_list_is_mutable_per_scan() -> None:
 
 def test_metadata_dict_is_mutable_per_scan() -> None:
     ctx = ScanContext(target_name="example.com", run_id="run-1")
-    ctx.metadata["operator"] = "fitzy"
-    assert ctx.metadata["operator"] == "fitzy"
+    ctx.metadata["operator"] = "operator-a"
+    assert ctx.metadata["operator"] == "operator-a"
 
 
 def test_invalid_state_transition_message_mentions_both_states() -> None:

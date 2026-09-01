@@ -114,6 +114,11 @@ class CheckDependencies:
     scope: ScopeController
     config: RedVeilConfig
     context: ScanContext
+    # Optional Behavior Engine model + behavior. The orchestrator builds
+    # these once per scan (via AttackSurfaceMapper) and passes them here.
+    # Checks that don't use the new infrastructure can leave these as None.
+    application_model: Any = None  # redveil.attack_surface.ApplicationModel
+    behavior_model: Any = None     # redveil.behavior.BehaviorModel
 
 
 class ValidationOutcome(str, Enum):

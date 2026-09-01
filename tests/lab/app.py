@@ -529,6 +529,69 @@ def api_graphql():
 # 17. Standard discovery endpoints
 # ----------------------------------------------------------------------------
 
+# ----------------------------------------------------------------------------
+# 17. GET /login-insecure — Session cookie with multiple missing flags
+# ----------------------------------------------------------------------------
+
+@app.route("/login-insecure")
+def login_insecure():
+    resp = flask.make_response('<html><body>Logged in (insecurely)</body></html>')
+    # No HttpOnly, no Secure, no SameSite — multiple issues
+    resp.set_cookie('session', 'insecure_session_token_abc123', path='/')
+    return resp
+
+
+# ----------------------------------------------------------------------------
+# 18. GET /login-https-only — Session cookie over HTTP (no Secure flag)
+# ----------------------------------------------------------------------------
+
+@app.route("/login-https-only")
+def login_https_only():
+    resp = flask.make_response('<html><body>Logged in (cookie without Secure)</body></html>')
+    resp.set_cookie('session', 'Yk7_q2vN3xMzP9bL4cVwR8jT6sH1dF0gA', path='/', httponly=True, samesite='Strict')
+    return resp
+
+
+# ----------------------------------------------------------------------------
+# 19. GET /login-weak-token — Session cookie with low-entropy token
+# ----------------------------------------------------------------------------
+
+@app.route("/login-weak-token")
+def login_weak_token():
+    resp = flask.make_response('<html><body>Logged in (weak token)</body></html>')
+    # Predictable token — should trigger weak_token finding
+    resp.set_cookie('session', 'abc123', path='/', httponly=True, secure=True, samesite='Strict')
+    return resp
+
+
+# ----------------------------------------------------------------------------
+# 20. GET /login-vulnerable — Session cookie without HttpOnly (hardening gap)
+# ----------------------------------------------------------------------------
+
+@app.route("/login-vulnerable")
+def login_vulnerable():
+    resp = flask.make_response('<html><body>Logged in (vulnerable to XSS chain)</body></html>')
+    # Cookie WITHOUT HttpOnly (so XSS could steal it) — but no XSS in this app
+    # This tests the "hardening gap" finding
+    resp.set_cookie('session', 'Yk7_q2vN3xMzP9bL4cVwR8jT6sH1dF0gA', path='/', secure=True, samesite='Strict')
+    return resp
+
+
+# ----------------------------------------------------------------------------
+# 21. GET /xss-vulnerable?q=... — XSS reflection sink (chain with /login-vulnerable)
+# ----------------------------------------------------------------------------
+
+@app.route("/xss-vulnerable")
+def xss_vulnerable():
+    q = flask.request.args.get('q', '')
+    # Reflects unescaped — simulates a real XSS sink
+    return f'<html><body>You searched for: {q}</body></html>'
+
+
+# ----------------------------------------------------------------------------
+# 22. Standard discovery endpoints
+# ----------------------------------------------------------------------------
+
 @app.route("/robots.txt")
 def robots():
     body = """User-agent: *

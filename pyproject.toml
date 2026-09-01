@@ -76,6 +76,8 @@ session-cookie = "redveil.checks.session_cookie:SessionCookieCheck"
 bola-idor = "redveil.checks.bola:BOLACheck"
 graphql = "redveil.checks.graphql:GraphQLCheck"
 bfla = "redveil.checks.bfla:BFLACheck"
+bfla-behavior = "redveil.checks.bfla_behavior:BFLABehaviorCheck"
+session-invalidation = "redveil.checks.session_invalidation:SessionInvalidationCheck"
 mass-assignment = "redveil.checks.mass_assignment:MassAssignmentCheck"
 
 [tool.hatch.build.targets.wheel]

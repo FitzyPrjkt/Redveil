@@ -48,6 +48,16 @@ evidence a scanner should collect, and any safety notes.
 | 15 | `GET /api/source-map` | Source map disclosure | Returns a fake `.js.map` JSON with `Content-Type: application/json` and `X-SourceMap` header |
 | 16 | `GET|POST /api/graphql` | GraphQL introspection enabled | `{"query": "{ __schema { types { name } } }"}` returns the type list |
 | 17 | `GET /robots.txt`, `GET /sitemap.xml` | Discovery | Static content listing disallowed paths and a basic sitemap |
+| 18 | `GET /login-insecure` | Weak session cookie (multiple flags missing) | Sets `session=insecure_session_token_abc123` with no `HttpOnly`, no `Secure`, no `SameSite` |
+| 19 | `GET /login-https-only` | Cookie over HTTP without `Secure` flag | Sets a long random session cookie with `HttpOnly` and `SameSite=Strict` but no `Secure` |
+| 20 | `GET /login-weak-token` | Low-entropy session token | Sets `session=abc123` (predictable 6-char token) despite correct flags |
+| 21 | `GET /login-vulnerable` | Hardening gap (no `HttpOnly`) | Sets a strong token with `Secure` and `SameSite=Strict` but no `HttpOnly` — XSS-chainable |
+| 22 | `GET /xss-vulnerable?q=` | Reflected XSS sink | `q` value is rendered verbatim into HTML; chains with `/login-vulnerable` to demonstrate a CRITICAL XSS-to-cookie-theft attack |
+
+> **Note:** Endpoints 18–22 exist so redveil's `session-cookie` check (vector-based)
+> has real cookie data to test against. Each endpoint exercises a different
+> aspect of cookie hardening (missing flags, weak tokens, XSS chain) so the
+> framework can produce a differentiated finding for each class.
 
 ## Sample data
 

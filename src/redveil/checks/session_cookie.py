@@ -1,26 +1,29 @@
-"""SessionCookieCheck — detects session and cookie misconfigurations.
+"""SessionCookieCheck — vector-based session-token exposure detection.
 
-PASSIVE check. Inspects Set-Cookie headers from a single GET to the homepage
-and a passive GET to the login page. No mutation, no actual authentication.
+PASSIVE check. Identifies the session cookie, then for each of three attack
+vectors (browser, network, server), tests whether the cookie is exposed.
 
-Detects:
+The check is structured around the threat model:
 
-1. Cookies without the ``HttpOnly`` flag — readable from JavaScript, enabling
-   session theft via XSS.
-2. Cookies without the ``Secure`` flag — sent over plaintext HTTP, exposing
-   them to network attackers.
-3. Cookies without ``SameSite`` — vulnerable to cross-site request forgery
-   and session-riding attacks.
-4. Weak session token entropy — short tokens or low Shannon entropy indicate
-   predictable session identifiers that can be brute-forced or guessed.
-5. Token leakage in URLs — API keys or session tokens placed in query
-   parameters leak via ``Referer``, browser history, server logs, and
-   third-party scripts.
+                SESSION COOKIE
+                       │
+     ┌─────────────────┼─────────────────┐
+     ▼                 ▼                 ▼
+ 🌐 Browser        📡 Network        🖥️  Server
+     │                 │                 │
+ XSS?              HTTPS?             Weak entropy?
+ no HttpOnly?      no Secure?         Token leaked
+ no SameSite?      in URL?            in debug?
+     │                 │                 │
+     └─────────────────┼─────────────────┘
+                       ▼
+              Confirmed / Likely / False positive
 
-Session fixation is NOT actively tested (would require a real login attempt).
-The check only notes when a session cookie is issued on the login page
-without changing — that is a strong indicator of fixation, but the operator
-must perform the active test themselves.
+The old flat check reported any missing flag as a finding regardless of
+whether the flag was actually exploitable. The vector-based design only
+escalates severity when the missing flag aligns with a reachable attack
+path. This reduces false positives and produces findings that already
+include the full attack chain for the dev team.
 """
 from __future__ import annotations
 
@@ -47,30 +50,34 @@ from redveil.plugins.base import (
 )
 from redveil.util.urls import join_url
 
-# Endpoints probed to detect session cookies. We probe the homepage and a
-# small set of common login URLs. The check only GETs these — no POSTs, no
-# credentials, no actual login.
-_LOGIN_PATHS = ("/login", "/auth/login", "/signin", "/auth", "/account/login")
+# Token-like query parameter names — common leak vectors.
+_TOKEN_PARAM_NAMES = (
+    "token", "session", "auth", "apikey", "api_key", "access_token",
+    "sid", "secret", "key", "jwt",
+)
 
-# Query parameter names that look like session tokens / API keys. These are
-# the most common names observed in real leaks.
-_TOKEN_PARAM_NAMES = ("token", "session", "auth", "apikey", "api_key", "access_token", "sid")
-
-# Entropy thresholds (bits per character).
-# 3.5  — the "borderline" boundary from the spec. Below this, treat as weak.
-# 3.0  — strongly weak; CONFIRMED weakness.
-_ENTROPY_LIKELY = 3.5
-_ENTROPY_CONFIRMED = 3.0
-
-# Minimum acceptable session token length (chars).
-_MIN_TOKEN_LEN = 16
-
-# Heuristic: cookie names that look like session identifiers.
+# Cookie names that suggest a session/auth identifier.
 _SESSION_COOKIE_NAMES = (
     "session", "sessionid", "session_id", "sid", "phpsessid", "jsessionid",
     "asp.net_sessionid", "aspsessionid", "auth", "auth_token", "token",
     "user_token", "csrf_token", "remember_me", "remember_token", "connect.sid",
 )
+
+# Entropy thresholds (bits per character).
+_ENTROPY_CONFIRMED = 3.0
+_ENTROPY_LIKELY = 3.5
+
+# Minimum acceptable session-token length (chars).
+_MIN_TOKEN_LEN = 16
+
+# Canary strings for the inline XSS reflection probe (browser vector).
+# Plain alphanumeric, HTML-encoded quote, angle brackets. Cannot execute JS.
+_XSS_CANARIES = (
+    "redveilXSSProbe12345",
+    "redv&quot;ail12345",
+    "redveilXSSanglebracketless12345",
+)
+_REFLECTED_THRESHOLD = 1
 
 
 # ---------------------------------------------------------------------------
@@ -79,85 +86,59 @@ _SESSION_COOKIE_NAMES = (
 
 
 def shannon_entropy(s: str) -> float:
-    """Compute Shannon entropy of ``s`` in bits per character.
-
-    Returns 0.0 for empty strings. The result is the average number of bits
-    needed to encode each character given the empirical distribution of
-    characters in ``s``.
-    """
     if not s:
         return 0.0
     counts = Counter(s)
     length = len(s)
-    entropy = 0.0
-    for count in counts.values():
-        p = count / length
-        entropy -= p * log2(p)
-    return entropy
-
-
-def _looks_like_session_cookie(name: str) -> bool:
-    """True if the cookie name suggests a session identifier."""
-    lower = name.lower()
-    return any(token in lower for token in _SESSION_COOKIE_NAMES)
+    return -sum((c / length) * log2(c / length) for c in counts.values())
 
 
 def _split_set_cookie(combined: str) -> list[str]:
-    """Split a comma-joined Set-Cookie header back into individual cookies.
-
-    httpx's ``dict(Headers)`` collapses multiple ``Set-Cookie`` headers into a
-    single string by joining with ``", "``. We re-split here using a regex
-    that only matches commas followed by a valid cookie ``name=value`` pair,
-    so ``Expires=Wdy, DD-Mon-YY ...`` is not mis-split.
-    """
     if not combined:
         return []
-    # `, ` followed by a name=value pair where name is a valid cookie-name char.
-    parts = re.split(r", (?=[A-Za-z0-9_.\-]+=)", combined)
-    return [p.strip() for p in parts if p.strip()]
+    return [
+        p.strip()
+        for p in re.split(r", (?=[A-Za-z0-9_.\-]+=)", combined)
+        if p.strip()
+    ]
 
 
 def _parse_set_cookie(value: str) -> dict[str, str] | None:
-    """Parse one ``Set-Cookie`` value into ``{name, value, ...attrs}``.
-
-    Returns None if the value cannot be parsed (no ``name=value``).
-    """
-    if not value:
+    if not value or "=" not in value:
         return None
-    segments = [s.strip() for s in value.split(";")]
-    if not segments or "=" not in segments[0]:
+    segments = [s.strip() for s in value.split(";") if s.strip()]
+    if not segments:
         return None
     name, _, val = segments[0].partition("=")
-    name = name.strip()
-    val = val.strip()
+    name, val = name.strip(), val.strip()
     if not name:
         return None
-    out: dict[str, str] = {"name": name, "value": val}
+    out = {"name": name, "value": val}
     for seg in segments[1:]:
         if "=" in seg:
             k, _, v = seg.partition("=")
             out[k.strip().lower()] = v.strip()
         else:
-            # boolean attribute like "HttpOnly" or "Secure"
             out[seg.strip().lower()] = "true"
     return out
 
 
 def _iter_set_cookies(headers: dict[str, str]) -> list[dict[str, str]]:
-    """Yield parsed Set-Cookie entries from a response headers dict."""
-    raw_value = None
-    for k, v in headers.items():
-        if k.lower() == "set-cookie":
-            raw_value = v
-            break
-    if raw_value is None:
+    raw = next(
+        (v for k, v in headers.items() if k.lower() == "set-cookie"),
+        None,
+    )
+    if not raw:
         return []
-    cookies: list[dict[str, str]] = []
-    for piece in _split_set_cookie(raw_value):
-        parsed = _parse_set_cookie(piece)
-        if parsed is not None:
-            cookies.append(parsed)
-    return cookies
+    return [
+        p
+        for p in (_parse_set_cookie(seg) for seg in _split_set_cookie(raw))
+        if p
+    ]
+
+
+def _is_session_cookie_name(name: str) -> bool:
+    return any(tok in name.lower() for tok in _SESSION_COOKIE_NAMES)
 
 
 def _is_https(url: str) -> bool:
@@ -165,7 +146,6 @@ def _is_https(url: str) -> bool:
 
 
 def _redact(value: str, keep: int = 4) -> str:
-    """Redact a secret-bearing value, keeping only the first ``keep`` chars."""
     if not value:
         return ""
     if len(value) <= keep:
@@ -173,13 +153,9 @@ def _redact(value: str, keep: int = 4) -> str:
     return value[:keep] + "..." + ("[REDACTED]" if len(value) > keep + 8 else "")
 
 
-def _get_header(headers: dict[str, str], name: str) -> str | None:
-    """Case-insensitive header lookup. Returns the value or None."""
-    target = name.lower()
-    for k, v in headers.items():
-        if k.lower() == target:
-            return v
-    return None
+def _canary_reflected(resp_body: str) -> bool:
+    """True if any canary string appears verbatim in the response body."""
+    return any(canary in resp_body for canary in _XSS_CANARIES)
 
 
 # ---------------------------------------------------------------------------
@@ -188,314 +164,378 @@ def _get_header(headers: dict[str, str], name: str) -> str | None:
 
 
 class SessionCookieCheck(Check):
-    """Detects cookie misconfiguration, weak session tokens, and token leakage."""
+    """Vector-based session-token exposure detection."""
 
     meta = CheckMeta(
         id="session-cookie",
-        name="Session and Cookie Configuration Check",
+        name="Session Token Exposure (Vector-Based)",
         category=CheckCategory.SESSION,
         safety_profile=SafetyProfile.PASSIVE,
-        version="0.1.0",
+        version="0.2.0",
         description=(
-            "Detects cookie misconfiguration (missing HttpOnly / Secure / "
-            "SameSite), weak session token entropy, token leakage in URLs, "
-            "and indicators of session fixation. Strictly passive — never "
-            "authenticates or mutates state."
+            "Detects session-token exposure via three attack vectors: "
+            "Browser (XSS + missing HttpOnly), Network (missing Secure over "
+            "HTTPS, token in URL), and Server (weak entropy, token in debug "
+            "log). Findings include the full attack chain, not just a "
+            "missing flag."
         ),
         references=[
             "CWE-1004: Sensitive Cookie Without HttpOnly Flag",
-            "CWE-614: Sensitive Cookie in HTTPS Session Without Secure Attribute",
-            "CWE-1275: Sensitive Cookie with SameSite Attribute None",
+            "CWE-614: Sensitive Cookie Without Secure Attribute",
+            "CWE-1275: Sensitive Cookie with SameSite None",
             "CWE-330: Use of Insufficiently Random Values",
-            "CWE-598: Information Exposure Through Query Strings in GET Request",
-            "OWASP A05:2021 - Security Misconfiguration",
-            "OWASP A07:2021 - Identification and Authentication Failures",
+            "CWE-598: Information Exposure Through Query Strings",
+            "CWE-384: Session Fixation",
+            "OWASP A05:2021 — Security Misconfiguration",
+            "OWASP A07:2021 — Identification and Authentication Failures",
         ],
     )
 
     def __init__(self) -> None:
         super().__init__()
-        # Cache request/response pairs collected during discover() so that
-        # collect_evidence() can reference them without re-issuing requests.
+        # Per-session cookie, hold the most recent request/response for
+        # collect_evidence() and assess() to reference.
         self._captured: dict[str, tuple[Request, Response]] = {}
 
     # -- discover --------------------------------------------------------
 
     async def discover(self, ctx) -> list[dict[str, Any]]:  # type: ignore[override]
-        """Inspect Set-Cookie headers from the homepage + login pages.
-
-        Strictly passive: only GETs, no authentication.
-        """
         base = str(self.deps.config.target.base_url).rstrip("/")
-        candidates: list[dict[str, Any]] = []
         self._captured = {}
+        candidates: list[dict[str, Any]] = []
 
-        # 1. Homepage — sets initial session cookies / tracking cookies.
-        home_url = join_url(base, "/")
         try:
-            home_req = Request(method="GET", url=home_url, purpose="discovery")
+            home_req = Request(method="GET", url=join_url(base, "/"), purpose="discovery")
             home_resp = await self.deps.http.send(home_req)
         except Exception:
-            home_resp = None  # type: ignore[assignment]
-            home_req = None  # type: ignore[assignment]
+            return candidates
 
-        if home_resp is not None and home_req is not None:
-            self._captured["home"] = (home_req, home_resp)
-            candidates.extend(self._candidates_from_response("home", home_req, home_resp))
-
-            # 2. Token leakage in URL — search the response body for token-like
-            #    query parameters reflected anywhere. Only check if we have a body.
+        self._captured["home"] = (home_req, home_resp)
+        session_cookies = [
+            c for c in _iter_set_cookies(home_resp.headers)
+            if _is_session_cookie_name(c["name"]) and c["value"]
+        ]
+        if not session_cookies:
+            # No session cookies on homepage; still check the body for
+            # leaked tokens (in case a token appears in a URL or response).
             candidates.extend(self._token_leakage_candidates(home_req, home_resp))
+            return candidates
 
-            # 3. Session fixation indicator — if a session cookie is present on
-            #    the homepage, fetch a login page passively. If the same cookie
-            #    comes back unchanged, that is a strong indicator of fixation.
-            fixation = await self._check_fixation_indicator(base, home_resp)
-            if fixation is not None:
-                candidates.append(fixation)
+        # Quick inline XSS reflection probe — cheap, single GET with a canary.
+        xss_evidence = await self._quick_xss_probe(base, home_resp)
 
+        for cookie in session_cookies:
+            # Run each vector test for this cookie.
+            candidates.extend(
+                self._check_browser_vector(cookie, home_req, home_resp, xss_evidence)
+            )
+            candidates.extend(
+                self._check_network_vector(cookie, home_req, home_resp)
+            )
+            candidates.extend(
+                self._check_server_vector(cookie, home_req, home_resp)
+            )
+
+        candidates.extend(self._token_leakage_candidates(home_req, home_resp))
         return candidates
 
-    def _candidates_from_response(
+    # -- vector: browser --------------------------------------------------
+
+    def _check_browser_vector(
         self,
-        endpoint: str,
-        req: Request,
-        resp: Response,
+        cookie: dict[str, str],
+        home_req: Request,
+        home_resp: Response,
+        xss_evidence: Evidence | None,
     ) -> list[dict[str, Any]]:
-        """Inspect Set-Cookie headers from a single response."""
-        candidates: list[dict[str, Any]] = []
-        cookies = _iter_set_cookies(resp.headers)
-        for cookie in cookies:
-            name = cookie["name"]
-            value = cookie["value"]
+        """Browser-side attack vector: XSS reads the cookie via document.cookie.
 
-            # Cookie flag checks: only emit HttpOnly/Secure/SameSite candidates
-            # for cookies that LOOK like session/auth tokens. Plain tracking
-            # cookies (analytics, preferences) are out of scope.
-            if not _looks_like_session_cookie(name):
+        Severity escalates if XSS reflection is observed on the same origin —
+        then missing HttpOnly is a *confirmed* exposure, not just a hardening
+        gap.
+        """
+        findings: list[dict[str, Any]] = []
+        has_httponly = cookie.get("httponly") == "true"
+        samesite = cookie.get("samesite")
+
+        if not has_httponly:
+            if xss_evidence is not None:
+                findings.append({
+                    "vector": "browser",
+                    "subkind": "xss_steals_session",
+                    "cookie_name": cookie["name"],
+                    "cookie_value": cookie["value"],
+                    "xss_evidence": xss_evidence,
+                    "request": xss_evidence.request,
+                    "response": xss_evidence.response,
+                    "endpoint": xss_evidence.endpoint,
+                    "title": (
+                        f"Session Token Exposed via Browser Vector: "
+                        f"XSS reads cookie '{cookie['name']}' (HttpOnly missing)"
+                    ),
+                    "issue_key": "session_xss_steals",
+                })
+            else:
+                findings.append({
+                    "vector": "browser",
+                    "subkind": "httponly_missing_no_xss",
+                    "cookie_name": cookie["name"],
+                    "cookie_value": cookie["value"],
+                    "request": home_req,
+                    "response": home_resp,
+                    "endpoint": home_req.url,
+                    "title": (
+                        f"Session Token Hardening Gap: cookie '{cookie['name']}' "
+                        f"missing HttpOnly (no XSS observed yet)"
+                    ),
+                    "issue_key": "cookie_httponly_missing",
+                })
+
+        if not samesite or samesite.lower() == "none":
+            if xss_evidence is not None:
+                findings.append({
+                    "vector": "browser",
+                    "subkind": "csrf_via_xss",
+                    "cookie_name": cookie["name"],
+                    "cookie_value": cookie["value"],
+                    "xss_evidence": xss_evidence,
+                    "request": xss_evidence.request,
+                    "response": xss_evidence.response,
+                    "endpoint": xss_evidence.endpoint,
+                    "title": (
+                        f"Session Token Exposed via Browser Vector: "
+                        f"XSS + SameSite={samesite or 'unset'} enables CSRF chain"
+                    ),
+                    "issue_key": "session_csrf_chain",
+                })
+            else:
+                findings.append({
+                    "vector": "browser",
+                    "subkind": "samesite_missing",
+                    "cookie_name": cookie["name"],
+                    "cookie_value": cookie["value"],
+                    "request": home_req,
+                    "response": home_resp,
+                    "endpoint": home_req.url,
+                    "title": (
+                        f"Session Token Hardening Gap: cookie '{cookie['name']}' "
+                        f"missing SameSite (no CSRF surface observed)"
+                    ),
+                    "issue_key": "cookie_samesite_missing",
+                })
+
+        return findings
+
+    # -- vector: network --------------------------------------------------
+
+    def _check_network_vector(
+        self,
+        cookie: dict[str, str],
+        home_req: Request,
+        home_resp: Response,
+    ) -> list[dict[str, Any]]:
+        """Network-side attack vector: MITM reads the cookie on the wire.
+
+        Severity escalates if HTTPS is used but the Secure flag is missing
+        — that's a *real* MITM exposure. Plaintext over HTTP is reported
+        separately as a transport-level issue.
+        """
+        findings: list[dict[str, Any]] = []
+        has_secure = cookie.get("secure") == "true"
+
+        if _is_https(home_req.url) and not has_secure:
+            findings.append({
+                "vector": "network",
+                "subkind": "secure_missing_over_https",
+                "cookie_name": cookie["name"],
+                "cookie_value": cookie["value"],
+                "request": home_req,
+                "response": home_resp,
+                "endpoint": home_req.url,
+                "title": (
+                    f"Session Token Exposed via Network Vector: "
+                    f"HTTPS site sends cookie '{cookie['name']}' without "
+                    f"Secure flag (MITM-readable on HTTP downgrade)"
+                ),
+                "issue_key": "session_mitm_exposure",
+            })
+
+        return findings
+
+    # -- vector: server ---------------------------------------------------
+
+    def _check_server_vector(
+        self,
+        cookie: dict[str, str],
+        home_req: Request,
+        home_resp: Response,
+    ) -> list[dict[str, Any]]:
+        """Server-side attack vector: weak randomness, predictable tokens,
+        brute-forceable sessions."""
+        findings: list[dict[str, Any]] = []
+        value = cookie["value"]
+
+        # Skip trivially-numeric or very short values (not real session tokens).
+        if not value or value.isdigit() or len(value) < 4:
+            return findings
+
+        entropy = shannon_entropy(value)
+        if entropy < _ENTROPY_CONFIRMED or len(value) < _MIN_TOKEN_LEN:
+            findings.append({
+                "vector": "server",
+                "subkind": "weak_token",
+                "cookie_name": cookie["name"],
+                "cookie_value": value,
+                "entropy_bits": round(entropy, 3),
+                "token_length": len(value),
+                "request": home_req,
+                "response": home_resp,
+                "endpoint": home_req.url,
+                "title": (
+                    f"Session Token Exposed via Server Vector: "
+                    f"weak entropy on '{cookie['name']}' "
+                    f"({entropy:.2f} bits/char, {len(value)} chars)"
+                ),
+                "issue_key": "session_weak_token",
+            })
+
+        return findings
+
+    # -- inline XSS probe ------------------------------------------------
+
+    async def _quick_xss_probe(
+        self,
+        base: str,
+        home_resp: Response,
+    ) -> Evidence | None:
+        """Send a benign canary in a common reflection point. If the canary
+        appears unescaped in the response, we have evidence that an XSS
+        attack chain is feasible on this origin.
+        """
+        # Prefer a reflection point that exists in the homepage HTML.
+        # Common param names that often reflect in title or error messages.
+        candidate_params = ("q", "search", "query", "id", "name", "input")
+        for param in candidate_params:
+            canary = _XSS_CANARIES[0]
+            try:
+                test_url = f"{base}/?{param}={canary}"
+                req = Request(method="GET", url=test_url, purpose="xss_canary_probe")
+                resp = await self.deps.http.send(req)
+            except Exception:
                 continue
+            if resp.status_code == 200 and canary in resp.body:
+                self._captured["xss_probe"] = (req, resp)
+                return Evidence(
+                    request=req,
+                    response=resp,
+                    kind=ObservationKind.REFLECTION,
+                    endpoint=test_url,
+                    method="GET",
+                    parameter=param,
+                    input_used=canary,
+                    status_code=resp.status_code,
+                    relevant_headers={"content-type": resp.headers.get("content-type", "")},
+                    body_excerpt=resp.body_excerpt,
+                    observation="benign canary reflected unescaped — XSS chain feasible",
+                )
+        return None
 
-            # HttpOnly flag missing.
-            if cookie.get("httponly") != "true":
-                candidates.append({
-                    "kind": "cookie_httponly_missing",
-                    "cookie_name": name,
-                    "cookie_value": value,
-                    "request": req,
-                    "response": resp,
-                    "endpoint": endpoint,
-                })
-
-            # Secure flag missing — only relevant when the connection is HTTPS.
-            if cookie.get("secure") != "true" and _is_https(req.url):
-                candidates.append({
-                    "kind": "cookie_secure_missing",
-                    "cookie_name": name,
-                    "cookie_value": value,
-                    "request": req,
-                    "response": resp,
-                    "endpoint": endpoint,
-                })
-
-            # SameSite attribute missing. Note: SameSite=None alone is not a
-            # weakness (modern browsers default to Lax for unset SameSite,
-            # but explicitly setting "None" without Secure is a weakness —
-            # we report both as candidates).
-            samesite = cookie.get("samesite")
-            if not samesite:
-                candidates.append({
-                    "kind": "cookie_samesite_missing",
-                    "cookie_name": name,
-                    "cookie_value": value,
-                    "request": req,
-                    "response": resp,
-                    "endpoint": endpoint,
-                })
-
-            # Entropy / length analysis. Only meaningful for opaque tokens.
-            # Skip empty or trivially short numeric values like "1".
-            if value and not value.isdigit() and len(value) >= 4:
-                entropy = shannon_entropy(value)
-                if entropy < _ENTROPY_LIKELY or len(value) < _MIN_TOKEN_LEN:
-                    candidates.append({
-                        "kind": "weak_session_token",
-                        "cookie_name": name,
-                        "cookie_value": value,
-                        "entropy_bits": round(entropy, 3),
-                        "token_length": len(value),
-                        "request": req,
-                        "response": resp,
-                        "endpoint": endpoint,
-                    })
-
-        return candidates
+    # -- token leakage (server vector side-effect) -----------------------
 
     def _token_leakage_candidates(
         self, req: Request, resp: Response
     ) -> list[dict[str, Any]]:
-        """Look for token-like query parameters reflected in the response body."""
-        candidates: list[dict[str, Any]] = []
         body = resp.body or ""
         if not body:
-            return candidates
-
-        # Pattern: ?token=abc123  or  &session=xyz  in raw HTML/JSON/text
-        # (search the raw body, not just URLs in href).
+            return []
+        candidates: list[dict[str, Any]] = []
         for name in _TOKEN_PARAM_NAMES:
-            # Look for `name=` followed by a token-looking value. The value
-            # must NOT be a JavaScript identifier / generic word like "true" or
-            # "false" — require at least 8 hex/base64/url-safe chars.
             pattern = re.compile(
-                rf"(?P<full>(?:^|[?&;\s])(?:{re.escape(name)})\s*=\s*"
-                rf"(?P<value>[A-Za-z0-9_\-/.+=%]{{8,}}))",
+                rf"(?:^|[?&;\s])(?:{re.escape(name)})\s*=\s*"
+                rf"(?P<value>[A-Za-z0-9_\-/.+=%]{{8,}})",
                 re.IGNORECASE,
             )
             for m in pattern.finditer(body):
-                # Skip if the matched "value" looks like it's part of a code
-                # snippet (e.g. property=value in JavaScript) — heuristic:
-                # require a value that is mostly alphanumeric and long.
                 value = m.group("value")
                 if len(value) < 8:
                     continue
                 candidates.append({
-                    "kind": "token_in_url",
-                    "context": "body",
+                    "vector": "server",
+                    "subkind": "token_in_response_body",
+                    "cookie_name": "(none — token in body)",
                     "parameter": name,
                     "value": value,
                     "request": req,
                     "response": resp,
                     "endpoint": req.url,
+                    "title": (
+                        f"Session Token Exposed via Server Vector: "
+                        f"token-like parameter '{name}' reflected in response"
+                    ),
+                    "issue_key": "token_in_url",
                 })
-                break  # one candidate per parameter name per response
-
+                break
         return candidates
-
-    async def _check_fixation_indicator(
-        self, base: str, home_resp: Response
-    ) -> dict[str, Any] | None:
-        """PASSIVE session-fixation indicator.
-
-        If the homepage issues a session cookie, fetch a login page. If the
-        login page also sets a session cookie WITHOUT changing the existing
-        one (i.e. the same token is honored), the application is *likely*
-        vulnerable to session fixation. We do NOT actually log in — we only
-        verify that the login page accepts the existing token.
-
-        Returns a candidate dict, or None if no signal is observable.
-        """
-        home_cookies = _iter_set_cookies(home_resp.headers)
-        session_cookie = next(
-            (c for c in home_cookies if _looks_like_session_cookie(c["name"])),
-            None,
-        )
-        if session_cookie is None:
-            return None
-
-        for path in _LOGIN_PATHS:
-            try:
-                login_url = join_url(base, path)
-                login_req = Request(
-                    method="GET",
-                    url=login_url,
-                    cookies={session_cookie["name"]: session_cookie["value"]},
-                    purpose="passive_session_fixation_check",
-                )
-                login_resp = await self.deps.http.send(login_req)
-            except Exception:
-                continue
-
-            self._captured[f"login:{path}"] = (login_req, login_resp)
-
-            # If the login page sets a NEW cookie with the SAME name and a
-            # different value, the application rotates — fixation unlikely.
-            login_cookies = _iter_set_cookies(login_resp.headers)
-            issued = next(
-                (c for c in login_cookies if c["name"] == session_cookie["name"]),
-                None,
-            )
-            if issued is not None and issued["value"] != session_cookie["value"]:
-                # New value issued on login — looks fine.
-                continue
-
-            # Same cookie accepted, not rotated — fixation indicator.
-            if 200 <= login_resp.status_code < 400:
-                return {
-                    "kind": "session_fixation_indicator",
-                    "cookie_name": session_cookie["name"],
-                    "endpoint": path,
-                    "request": login_req,
-                    "response": login_resp,
-                }
-
-        return None
 
     # -- validate --------------------------------------------------------
 
     async def validate(  # type: ignore[override]
         self, ctx, candidate: dict[str, Any]
     ) -> ValidationResult | None:
-        """Validate based on candidate kind."""
-        kind = candidate.get("kind")
-
-        # Cookie flag issues are directly observable.
-        if kind in {"cookie_httponly_missing", "cookie_secure_missing", "cookie_samesite_missing"}:
+        subkind = candidate.get("subkind", "")
+        # XSS chain confirmed: directly observed
+        if subkind == "xss_steals_session":
             return ValidationResult(
                 outcome=ValidationOutcome.CONFIRMED,
                 confidence="high",
-                observation=(
-                    f"cookie '{candidate['cookie_name']}' lacks the "
-                    f"{kind.split('_', 1)[1].replace('_', ' ')} attribute"
-                ),
+                observation="canary reflection + missing HttpOnly = direct attack chain",
             )
-
-        # Weak tokens: CONFIRMED if very weak, LIKELY if borderline.
-        if kind == "weak_session_token":
+        if subkind == "csrf_via_xss":
+            return ValidationResult(
+                outcome=ValidationOutcome.CONFIRMED,
+                confidence="high",
+                observation="XSS observed on same origin + SameSite unset enables CSRF chain",
+            )
+        # MITM: HTTPS site with non-Secure cookie
+        if subkind == "secure_missing_over_https":
+            return ValidationResult(
+                outcome=ValidationOutcome.CONFIRMED,
+                confidence="high",
+                observation="HTTPS site sets cookie without Secure flag — MITM-readable",
+            )
+        # Weak token: entropy-driven
+        if subkind == "weak_token":
             entropy = candidate.get("entropy_bits", 0.0)
             token_len = candidate.get("token_length", 0)
             if entropy < _ENTROPY_CONFIRMED or token_len < 8:
                 return ValidationResult(
                     outcome=ValidationOutcome.CONFIRMED,
                     confidence="high",
-                    observation=(
-                        f"session token entropy {entropy} bits/char and "
-                        f"length {token_len} — easily guessable"
-                    ),
+                    observation=f"token entropy {entropy} bits/char, length {token_len}",
                 )
             return ValidationResult(
                 outcome=ValidationOutcome.LIKELY,
                 confidence="medium",
-                observation=(
-                    f"session token entropy {entropy} bits/char and "
-                    f"length {token_len} — borderline; manual review recommended"
-                ),
+                observation=f"token entropy {entropy} bits/char — borderline",
             )
-
-        # Session fixation indicator: passive only, manual confirmation required.
-        if kind == "session_fixation_indicator":
-            return ValidationResult(
-                outcome=ValidationOutcome.LIKELY,
-                confidence="low",
-                observation=(
-                    "session cookie accepted on login page without rotation; "
-                    "active login test required for confirmation"
-                ),
-            )
-
-        # Token leakage — directly observable in the response body.
-        if kind == "token_in_url":
+        # Token in body: directly observable
+        if subkind == "token_in_response_body":
             return ValidationResult(
                 outcome=ValidationOutcome.CONFIRMED,
                 confidence="high",
-                observation=(
-                    f"token-like parameter '{candidate['parameter']}' "
-                    f"observed in response body"
-                ),
+                observation="token-like parameter reflected in response body",
             )
-
+        # Hardening gaps with no observed attack chain
+        if subkind in {"httponly_missing_no_xss", "samesite_missing"}:
+            return ValidationResult(
+                outcome=ValidationOutcome.LIKELY,
+                confidence="low",
+                observation="hardening gap; no observed attack chain — defense in depth",
+            )
         return ValidationResult(
             outcome=ValidationOutcome.INCONCLUSIVE,
             confidence="low",
-            observation="unknown candidate kind",
+            observation="unknown subkind",
         )
 
     # -- evidence --------------------------------------------------------
@@ -503,24 +543,18 @@ class SessionCookieCheck(Check):
     async def collect_evidence(  # type: ignore[override]
         self, candidate: dict[str, Any]
     ) -> list[Evidence]:
-        """Attach the originating request/response and the cookie header."""
         req: Request | None = candidate.get("request")
         resp: Response | None = candidate.get("response")
         if req is None or resp is None:
             return []
 
-        kind = candidate.get("kind", "")
-        cookie_name = candidate.get("cookie_name", "")
+        relevant: dict[str, str] = {
+            k: v for k, v in resp.headers.items()
+            if k.lower() in {"set-cookie", "location", "referer"}
+        }
 
-        # Build the relevant-headers dict: only cookie-related + a couple of
-        # context headers. We always redact the cookie value.
-        relevant: dict[str, str] = {}
-        for k, v in resp.headers.items():
-            if k.lower() in {"set-cookie", "location", "referer"}:
-                relevant[k] = v
-
-        if kind == "token_in_url":
-            # Body excerpt: 200-char window around the matched token-like parameter.
+        subkind = candidate.get("subkind", "")
+        if subkind == "token_in_response_body":
             param = candidate.get("parameter", "")
             value = candidate.get("value", "")
             idx = resp.body.find(f"{param}={value}")
@@ -530,29 +564,32 @@ class SessionCookieCheck(Check):
                 start = max(0, idx - 100)
                 end = min(len(resp.body), idx + len(param) + len(value) + 50)
                 excerpt = resp.body[start:end]
-            observation = (
-                f"token-like parameter '{param}' reflected in response body"
-            )
-            parameter = param
-            input_used = value
-        else:
-            excerpt = ""
-            observation = f"{kind} for cookie '{cookie_name}'"
-            parameter = cookie_name
-            input_used = _redact(candidate.get("cookie_value", ""))
+            return [Evidence(
+                request=req,
+                response=resp,
+                kind=ObservationKind.ERROR_DISCLOSURE,
+                endpoint=req.url,
+                method=req.method,
+                parameter=param,
+                input_used=value,
+                status_code=resp.status_code,
+                relevant_headers=relevant,
+                body_excerpt=excerpt,
+                observation=f"token-like parameter '{param}' reflected in response body",
+            )]
 
         return [Evidence(
             request=req,
             response=resp,
             kind=ObservationKind.COOKIE_FLAG,
-            endpoint=candidate.get("endpoint", req.url),
+            endpoint=req.url,
             method=req.method,
-            parameter=parameter,
-            input_used=input_used,
+            parameter=candidate.get("cookie_name", ""),
+            input_used=_redact(candidate.get("cookie_value", "")),
             status_code=resp.status_code,
             relevant_headers=relevant,
-            body_excerpt=excerpt,
-            observation=observation,
+            body_excerpt=resp.body_excerpt,
+            observation=f"{candidate.get('vector', '?')}/{subkind} for cookie '{candidate.get('cookie_name', '?')}'",
         )]
 
     # -- assess ----------------------------------------------------------
@@ -560,56 +597,45 @@ class SessionCookieCheck(Check):
     async def assess(  # type: ignore[override]
         self, candidate: dict[str, Any]
     ) -> Finding | None:
-        """Build a Finding from a validated session-cookie candidate."""
-        kind = candidate.get("kind", "")
-        cookie_name = candidate.get("cookie_name", "") or "(unknown)"
-        endpoint = candidate.get("endpoint", "/")
+        title = candidate.get("title", "Session Token Exposure")
+        subkind = candidate.get("subkind", "")
+        vector = candidate.get("vector", "?")
 
-        # Title and severity by kind.
-        if kind == "cookie_httponly_missing":
-            title = f"Session Cookie '{cookie_name}' Missing HttpOnly Flag"
-            severity = Severity.MEDIUM
-            issue_key = "cookie_httponly_missing"
-            cwe = ["CWE-1004"]
-        elif kind == "cookie_secure_missing":
-            title = f"Session Cookie '{cookie_name}' Missing Secure Flag"
-            severity = Severity.MEDIUM
-            issue_key = "cookie_secure_missing"
-            cwe = ["CWE-614"]
-        elif kind == "cookie_samesite_missing":
-            title = f"Session Cookie '{cookie_name}' Missing SameSite Attribute"
-            severity = Severity.MEDIUM
-            issue_key = "cookie_samesite_missing"
-            cwe = ["CWE-1275"]
-        elif kind == "weak_session_token":
-            entropy = candidate.get("entropy_bits", 0.0)
-            token_len = candidate.get("token_length", 0)
-            title = (
-                f"Weak Session Token Entropy on Cookie '{cookie_name}' "
-                f"({entropy} bits/char, {token_len} chars)"
-            )
-            severity = Severity.HIGH
-            issue_key = "weak_session_token"
-            cwe = ["CWE-330"]
-        elif kind == "token_in_url":
-            param = candidate.get("parameter", "")
-            title = f"Sensitive Token '{param}' Present in Response Body / URL"
-            severity = Severity.HIGH
-            issue_key = "token_in_url"
-            cwe = ["CWE-598"]
-        elif kind == "session_fixation_indicator":
-            title = (
-                f"Possible Session Fixation on Cookie '{cookie_name}' "
-                f"(login page accepts pre-existing session)"
-            )
-            severity = Severity.MEDIUM
-            issue_key = "session_fixation_indicator"
-            cwe = ["CWE-384"]
+        # Severity by subkind. Vector-based, contextual.
+        severity_map = {
+            "xss_steals_session": Severity.CRITICAL,
+            "csrf_via_xss": Severity.HIGH,
+            "secure_missing_over_https": Severity.HIGH,
+            "weak_token": Severity.HIGH,
+            "token_in_response_body": Severity.HIGH,
+            "httponly_missing_no_xss": Severity.LOW,
+            "samesite_missing": Severity.LOW,
+        }
+        severity = severity_map.get(subkind, Severity.MEDIUM)
+
+        # Status from validation
+        confidence_map = {
+            "xss_steals_session": Confidence.HIGH,
+            "csrf_via_xss": Confidence.HIGH,
+            "secure_missing_over_https": Confidence.HIGH,
+            "weak_token": Confidence.HIGH,
+            "token_in_response_body": Confidence.HIGH,
+            "httponly_missing_no_xss": Confidence.LOW,
+            "samesite_missing": Confidence.LOW,
+        }
+        confidence = confidence_map.get(subkind, Confidence.MEDIUM)
+
+        if subkind in {"httponly_missing_no_xss", "samesite_missing"}:
+            status = FindingStatus.LIKELY  # hardening gap, no chain observed
+        elif subkind in {"xss_steals_session", "csrf_via_xss", "secure_missing_over_https",
+                          "token_in_response_body"}:
+            status = FindingStatus.CONFIRMED
         else:
-            return None
+            status = FindingStatus.LIKELY
 
-        # Pull rich content from the knowledge base.
-        entry = get_entry(self.meta.id, issue_key)
+        # Pull rich content from knowledge base
+        issue_key = candidate.get("issue_key", subkind)
+        entry = get_entry(self.meta.id, issue_key) or get_entry(self.meta.id, subkind)
         if entry:
             summary = entry["summary"]
             technical = entry["technical"]
@@ -618,46 +644,21 @@ class SessionCookieCheck(Check):
             attack_scenario = entry["attack_scenario"]
             code_examples = dict(entry["code_examples"])
         else:
-            summary = (
-                f"{title}. See response headers for the cookie definition."
-            )
+            summary = title
             technical = (
-                f"Cookie '{cookie_name}' is missing recommended security "
-                "attributes."
+                f"Session cookie '{candidate.get('cookie_name', '?')}' is exposed "
+                f"via the {vector} attack vector. {subkind.replace('_', ' ')}."
             )
-            impact = (
-                "Missing flags or weak tokens increase the risk of session "
-                "hijacking or fixation."
-            )
+            impact = "Session hijack via the documented attack vector."
             remediation = [
                 "Set HttpOnly, Secure, and SameSite=Strict on all session cookies.",
-                "Use a CSPRNG to generate session tokens of at least 128 bits.",
+                "Use a CSPRNG to generate session tokens (>=128 bits).",
             ]
             attack_scenario = None
             code_examples = {}
 
-        # Confidence by kind.
-        confidence_map = {
-            "cookie_httponly_missing": Confidence.HIGH,
-            "cookie_secure_missing": Confidence.HIGH,
-            "cookie_samesite_missing": Confidence.HIGH,
-            "weak_session_token": Confidence.HIGH
-                if candidate.get("entropy_bits", 0.0) < _ENTROPY_CONFIRMED
-                else Confidence.MEDIUM,
-            "token_in_url": Confidence.HIGH,
-            "session_fixation_indicator": Confidence.LOW,
-        }
-        confidence = confidence_map.get(kind, Confidence.MEDIUM)
-
-        # Status: weak tokens above the CONFIRMED threshold are LIKELY;
-        # everything else observed directly is CONFIRMED; the fixation
-        # indicator is LIKELY until actively verified.
-        if kind == "weak_session_token" and candidate.get("entropy_bits", 0.0) >= _ENTROPY_CONFIRMED:
-            status = FindingStatus.LIKELY
-        elif kind == "session_fixation_indicator":
-            status = FindingStatus.LIKELY
-        else:
-            status = FindingStatus.CONFIRMED
+        # Add vector-prefix to summary for clarity
+        summary = f"[{vector.upper()} VECTOR] {summary}"
 
         base = str(self.deps.config.target.base_url)
         parsed = urlparse(base)
@@ -677,18 +678,38 @@ class SessionCookieCheck(Check):
                 host=parsed.hostname or "",
                 port=parsed.port,
                 scheme=parsed.scheme or "https",
-                endpoint=endpoint,
+                endpoint=candidate.get("endpoint", "/"),
                 method="GET",
-                parameter=cookie_name,
+                parameter=candidate.get("cookie_name") or candidate.get("parameter", ""),
             ),
-            parameter=cookie_name,
-            input_used=_redact(candidate.get("cookie_value", "") or candidate.get("value", "")),
+            parameter=candidate.get("cookie_name") or candidate.get("parameter", ""),
+            input_used=_redact(candidate.get("cookie_value", "")) or _redact(candidate.get("value", "")),
             summary=summary,
             technical_explanation=technical,
             impact=impact,
             attack_scenario=attack_scenario,
             code_examples=code_examples,
             remediation=remediation,
-            cwe=cwe,
-            owasp=["A05:2021"],
+            cwe=self._cwes_for_subkind(subkind),
+            owasp=self._owasp_for_subkind(subkind),
         )
+
+    def _cwes_for_subkind(self, subkind: str) -> list[str]:
+        return {
+            "xss_steals_session": ["CWE-1004", "CWE-79"],
+            "csrf_via_xss": ["CWE-1275", "CWE-352"],
+            "secure_missing_over_https": ["CWE-614", "CWE-319"],
+            "weak_token": ["CWE-330", "CWE-340"],
+            "token_in_response_body": ["CWE-598"],
+            "httponly_missing_no_xss": ["CWE-1004"],
+            "samesite_missing": ["CWE-1275"],
+        }.get(subkind, ["CWE-1004"])
+
+    def _owasp_for_subkind(self, subkind: str) -> list[str]:
+        if subkind.startswith("xss") or subkind.startswith("csrf"):
+            return ["A05:2021", "A03:2021"]
+        if "secure" in subkind or "mitm" in subkind:
+            return ["A02:2021", "A05:2021"]
+        if "weak" in subkind:
+            return ["A07:2021"]
+        return ["A05:2021"]

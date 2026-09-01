@@ -71,6 +71,10 @@ class Orchestrator:
         self._evidence: dict[str, Evidence] = {}
         # Deduplicator for findings discovered across checks
         self._dedup = FindingDeduplicator()
+        # Behavior Engine: ApplicationModel + StateHistory. Built lazily
+        # after the first pass (during run()).
+        self._application_model = None
+        self._behavior_model = None
         self._bind_all_checks()
 
     def _bind_all_checks(self) -> None:
@@ -85,9 +89,40 @@ class Orchestrator:
             scope=self._http._scope,
             config=self._config,
             context=self._ctx,
+            application_model=self._application_model,
+            behavior_model=self._behavior_model,
         )
         for check in self._registry.all():
             check.bind(deps)
+
+    async def _build_application_model(self) -> None:
+        """Build the ApplicationModel via AttackSurfaceMapper.
+
+        Called once during the discovery phase. After the model is built,
+        we re-bind all checks so they can read it via deps.application_model.
+        """
+        from redveil.attack_surface import AttackSurfaceMapper
+        from redveil.behavior import BehaviorModel
+
+        try:
+            mapper = AttackSurfaceMapper(self._http, self._config)
+            self._application_model = await mapper.build()
+            self._behavior_model = BehaviorModel(
+                application_model=self._application_model,
+            )
+            self._behavior_model.attach_http(self._http)
+            self._bind_all_checks()
+        except Exception as e:
+            # Non-fatal: checks that don't need the model still work.
+            self._bus.publish(Event(
+                EventType.ERROR, source="attack_surface_mapper",
+                data={"phase": "model_build", "error": str(e),
+                      "type": type(e).__name__},
+            ))
+
+    @property
+    def application_model(self):
+        return self._application_model
 
     @property
     def evidence_store(self) -> dict[str, Evidence]:
@@ -167,6 +202,9 @@ class Orchestrator:
         """
         self._ctx.transition(ScanState.DISCOVERING)
         await self._bus.publish(Event(EventType.DISCOVERY_STARTED, source="orchestrator"))
+        # Build the ApplicationModel via AttackSurfaceMapper BEFORE running
+        # any check.discover() so checks that consume the model have it ready.
+        await self._build_application_model()
         for check in self._registry.all():
             try:
                 await check.discover(self._ctx)  # type: ignore[arg-type]
