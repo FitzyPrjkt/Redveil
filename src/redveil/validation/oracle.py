@@ -77,6 +77,8 @@ class SignalKind:
     GRAPHQL_INTROSPECTION = "graphql_introspection"
     SUBDOMAIN_DISCOVERED = "subdomain_discovered"
 
+    FLAKY_ENDPOINT = "flaky_endpoint"
+
     # Dimension tags so the ConfidenceScorer can de-duplicate within dimension
     DIMENSION = {
         STATUS_DIFF: "response",
@@ -102,4 +104,6 @@ class SignalKind:
         WEAK_TOKEN_ENTROPY: "behavior",
         TOKEN_IN_BODY: "behavior",
         ADMIN_ENDPOINT_ACCESSIBLE: "behavior",
+        # Wave 4 — flakiness signal
+        FLAKY_ENDPOINT: "replay",
     }
