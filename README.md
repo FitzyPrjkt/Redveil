@@ -94,14 +94,88 @@ see [SECURITY.md](SECURITY.md) for the full safety model and how to report issue
 ## CLI
 
 ```
-$ redveil scan <url> [--scope FILE] [--profile PROFILE] [--output DIR]
-$ redveil check <plugin-id> <url>
-$ redveil list-checks
-$ redveil findings <report-dir>
-$ redveil report <report-dir>
+$ redveil --help                # show all commands
+$ redveil scan --help            # scan command flags
+$ redveil check --help           # single-check flags
+$ redveil list-checks            # list 17 registered check plugins
+$ redveil findings <dir>         # show summary of a saved report
+$ redveil report <dir>           # re-render a report
 ```
 
-profiles: `passive` (default, observation only), `low_impact` (safe probes), `active` (requires explicit `active_testing: true` in scope).
+### `redveil scan <url>`
+
+Run a full scan against a target. Flags:
+
+| Flag | Description |
+|---|---|
+| `<url>` | **Required.** Target base URL, e.g. `https://staging.example.com` |
+| `-s`, `--scope FILE` | Path to a scope YAML file. If omitted, a minimal single-host scope is built. |
+| `-p`, `--profile PROFILE` | Safety profile: `passive` (default), `low_impact`, or `active` |
+| `--max-requests N` | Hard cap on total requests (default 500) |
+| `--rps N` | Requests per second (default 2.0) |
+| `--active` | Enable ACTIVE checks. Requires `acknowledged_safety_terms: true` in scope. |
+| `-g`, `--gate-mode MODE` | ActionGate mode: `interactive`, `non_interactive` (default), `strict` |
+| `--allow-destructive` | Explicit opt-in to unlock destructive actions (each still needs per-action typed confirm) |
+| `--max-destructive-level L` | Operator's ceiling. Short form `L1`-`L6` or integer. Default `2` (data_modification). |
+| `-o`, `--output DIR` | Output directory for reports (default `reports/`) |
+
+### `redveil check <plugin-id> <url>`
+
+Run a single check plugin. Useful for targeted testing.
+
+```bash
+redveil check cors-policy https://staging.example.com
+redveil check xss-reflected https://target.com --scope scope.yaml
+```
+
+### `redveil list-checks`
+
+List all 17 registered check plugins with their safety profile:
+
+```
+bfla                BFLA / Function-Level Authorization Check
+bola-idor           BOLA / IDOR Check
+command-injection    Command Injection Check (Time-Based)
+cors-policy         CORS Policy Check
+graphql             GraphQL Check
+http-methods        HTTP Methods Check
+information-disclosure  Information Disclosure Check
+mass-assignment     Mass Assignment Check
+open-redirect-indicator  Open Redirect Indicator
+path-traversal      Path Traversal Check
+security-headers    Security Headers Check
+session-cookie      Session and Cookie Configuration Check
+source-map-exposure Source Map Exposure Check
+sqli-time-based     Time-Based Blind SQL Injection Check
+ssrf                Server-Side Request Forgery Check
+subdomain-finder    Subdomain Finder
+xss-reflected       Reflected XSS Check
+```
+
+### `redveil findings <report-dir>`
+
+Print a summary of a previously-saved report.
+
+```bash
+redveil findings reports/staging.example.com/
+# Output:
+#   12 findings
+#   - [HIGH    ] Missing X-Frame-Options Header
+#   - [MEDIUM  ] Missing Content-Security-Policy Header
+#   ...
+```
+
+### `redveil report <report-dir>`
+
+Re-render a report from existing `findings.json` (in case you want to
+regenerate the markdown/HTML after editing the JSON).
+
+### Safety profiles
+
+- `passive` (default) — only observation, no payload injection
+- `low_impact` — safe probes (CORS preflight, method check, harmless reflection)
+- `active` — requires `active_testing: true` in scope. Issues canary
+  payloads, time-based delays, OOB callbacks, etc.
 
 ## writing checks
 
