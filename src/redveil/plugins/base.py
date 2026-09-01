@@ -123,6 +123,10 @@ class CheckDependencies:
     # Checks that don't use the new infrastructure can leave these as None.
     application_model: Any = None  # redveil.attack_surface.ApplicationModel
     behavior_model: Any = None     # redveil.behavior.BehaviorModel
+    # Optional ActionGate for active checks that want to declare an
+    # ActionPlan before executing. None means checks proceed without
+    # gating (legacy behavior, equivalent to gate.allow_destructive=False).
+    gate: Any = None              # redveil.validation.gate.ActionGate
 
 
 class ValidationOutcome(str, Enum):

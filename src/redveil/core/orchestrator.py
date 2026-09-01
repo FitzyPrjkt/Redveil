@@ -75,6 +75,14 @@ class Orchestrator:
         # after the first pass (during run()).
         self._application_model = None
         self._behavior_model = None
+        # ActionGate for active checks. Default NON_INTERACTIVE; operators
+        # can configure via env or pass a custom gate. Destructive
+        # operations require explicit allow_destructive=true AND
+        # per-action approval.
+        from redveil.validation.gate import ActionGate, GateMode
+        self._gate = ActionGate(
+            mode=GateMode.NON_INTERACTIVE,
+        )
         self._bind_all_checks()
 
     def _bind_all_checks(self) -> None:
@@ -91,6 +99,7 @@ class Orchestrator:
             context=self._ctx,
             application_model=self._application_model,
             behavior_model=self._behavior_model,
+            gate=self._gate,
         )
         for check in self._registry.all():
             check.bind(deps)

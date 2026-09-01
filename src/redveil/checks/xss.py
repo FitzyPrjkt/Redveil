@@ -63,6 +63,39 @@ class ReflectedXSSCheck(Check):
         if not self.deps.config.authorization.acknowledged_safety_terms:
             return []
 
+        # Optional ActionGate: present the canary probe plan to the user.
+        # The gate only blocks MEDIUM+ in interactive mode. Canary probes
+        # are LOW risk (no destructive payload) so this is auto-approved.
+        from redveil.validation.risk import ActionPlan, Risk
+        plan = ActionPlan(
+            action_id="xss-canary-probe",
+            description=(
+                "Send benign alphanumeric canary to common reflection "
+                "points (q, search, query, id, name, input, text, message, "
+                "msg, comment, body, title, url, redirect, next, return, "
+                "callback, ref) and check whether the canary is reflected "
+                "unescaped in the response body."
+            ),
+            risk=Risk.LOW,
+            target=str(self.deps.config.target.base_url).rstrip("/") + "/",
+            purpose="Detect reflected XSS by checking for unescaped input reflection.",
+            expected_effect="200 OK response; canary present in body if reflected.",
+            potential_side_effects=(
+                "Logged in server access log; may trigger WAF if present.",
+            ),
+            max_requests=20,
+            timeout_seconds=10.0,
+        )
+        if self.deps.gate is not None:
+            decision = self.deps.gate.ask(
+                plan,
+                allow_destructive=self.deps.config.authorization.allow_destructive,
+            )
+            if not decision:
+                # User denied or auto-denied (destructive in non-interactive).
+                # In this case, deny is the right behavior.
+                return []
+
         base = str(self.deps.config.target.base_url).rstrip("/")
         candidates: list[dict[str, Any]] = []
 
