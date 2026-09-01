@@ -1,0 +1,91 @@
+# redveil scope configuration: authenticated single-principal (cookie auth)
+#
+# Use this template when:
+#   - You have a session cookie from a logged-in browser session.
+#   - The assessment is in-scope of that single user account.
+#   - You want LOW_IMPACT checks (CORS preflights, HTTP method
+#     enumeration, header reflection tests) plus all PASSIVE checks.
+#
+# Quickstart:
+#   redveil scan https://app.example.com --scope examples/scope.authenticated.yaml
+#
+# IMPORTANT: replace the cookie value below with a real session cookie
+# harvested from your browser. Do NOT commit a real cookie to version
+# control — use an environment override or a secrets manager.
+
+target:
+  base_url: https://app.example.com
+  name: Authenticated In-Session Assessment
+  description: Authorized assessment of the authenticated surface as a single test user.
+
+scope:
+  # Operator's in-scope hosts. Add CDN or asset hosts only if needed.
+  allowed_hosts:
+    - app.example.com
+    - cdn.example.com
+
+  # All paths on the application. Restrict if you only want a subset.
+  allowed_paths:
+    - /*
+
+  # Logout and password-change endpoints — never let the scanner log
+  # you out or rotate the session.
+  excluded_paths:
+    - /logout
+    - /api/v1/auth/logout
+    - /api/v1/auth/password
+
+  follow_redirects: true
+  max_redirects: 5
+
+limits:
+  # Lower RPS for fragile authenticated surfaces — you're holding a
+  # live session.
+  requests_per_second: 1.5
+  max_requests: 300
+  timeout_seconds: 10
+  max_response_size_bytes: 5000000
+  max_concurrent_requests: 3
+
+authorization:
+  # Active checks require extra authorization beyond the standard
+  # rules-of-engagement. Default to false for single-principal
+  # in-session assessments.
+  active_testing: false
+  out_of_band_callback_domain: null
+  acknowledged_safety_terms: false
+
+auth:
+  # Cookie-based auth. List one or more {name, value} entries.
+  method: cookie
+  cookies:
+    # Replace this with a real session cookie. The "REDACTED" value
+    # below is invalid and will result in 401 responses — substitute
+    # before running.
+    - name: session
+      value: "REDACTED_AT_RUNTIME"
+    # Optional: a CSRF token if the application uses double-submit
+    # cookies. The framework will send both on every request.
+    # - name: csrftoken
+    #   value: "REDACTED_AT_RUNTIME"
+
+  # Optional free-form headers applied to every request. Use for
+  # CSRF tokens sent as headers, API keys, or required User-Agent
+  # strings.
+  # extra_headers:
+  #   X-CSRF-Token: "REDACTED_AT_RUNTIME"
+
+  # No multi-principal testing for this scope. The framework uses the
+  # single method + cookies configured above.
+  principals: []
+
+reporting:
+  output_dir: reports
+  formats: [markdown, json, html]
+  # Redact secrets by default. The session cookie value will be
+  # replaced with [REDACTED] in cURL commands in the report.
+  redact_secrets: true
+
+# Safety profile ceiling. LOW_IMPACT includes all PASSIVE checks plus
+# safe probes.
+profile: low_impact

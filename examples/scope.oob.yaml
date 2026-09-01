@@ -1,0 +1,93 @@
+# redveil scope configuration: production with OOB (SSRF)
+#
+# Use this template when:
+#   - You are authorized to test production for Server-Side Request
+#     Forgery (SSRF).
+#   - You have set up an Out-of-Band (OOB) callback domain — typically
+#     an interactsh, Canary, or dnslog instance under your control.
+#   - The ssrf check will issue probes to the operator's callback
+#     domain and watch for inbound DNS or HTTP hits to confirm blind
+#     SSRF.
+#
+# Quickstart:
+#   redveil scan https://app.example.com --scope examples/scope.oob.yaml
+#
+# IMPORTANT: the OOB callback domain must be under the operator's
+# control. redveil will NOT target internal IP ranges (RFC1918,
+# link-local, loopback, etc.) — the OOB callback domain is the only
+# callback target permitted.
+
+target:
+  base_url: https://app.example.com
+  name: Production SSRF Assessment
+  description: Authorized SSRF assessment with operator-controlled OOB callback domain.
+
+scope:
+  allowed_hosts:
+    - app.example.com
+
+  # Endpoints that take a URL or host parameter. SSRF is meaningful
+  # only at endpoints that the server will fetch on the user's
+  # behalf: webhook configuration, URL preview, image fetch from
+  # URL, OAuth redirect validation, file imports, etc.
+  allowed_paths:
+    - /api/webhooks/*
+    - /api/preview*
+    - /api/fetch*
+    - /api/import*
+    - /api/oauth/*
+    - /api/avatar*
+
+  # Authentication, payment, account-deletion endpoints.
+  excluded_paths:
+    - /api/auth/*
+    - /api/payments/*
+    - /api/account/delete
+
+  follow_redirects: true
+  max_redirects: 5
+
+limits:
+  requests_per_second: 1
+  # SSRF checks issue multiple probes per endpoint; bump the cap.
+  max_requests: 1000
+  timeout_seconds: 15
+  max_response_size_bytes: 5000000
+  # Concurrency is held low because OOB confirmation depends on
+  # serial correlation with callback hits.
+  max_concurrent_requests: 3
+
+authorization:
+  # OOB SSRF is an ACTIVE check. Set both flags together.
+  active_testing: true
+  # The OOB callback domain MUST be a domain the operator controls.
+  # Examples:
+  #   - interactsh: "c8b0a8.example.interactsh.com"
+  #   - Canary: "your-canary-id.canarytokens.com"
+  #   - dnslog: "your-session-id.dnslog.cn"
+  # The ssrf check will issue HTTP and DNS probes to subdomains of
+  # this domain and watch for inbound callbacks.
+  out_of_band_callback_domain: "oast.example.com"
+  # Explicit acknowledgement that the operator has read and accepted
+  # the safety model. Required when active_testing=true.
+  acknowledged_safety_terms: true
+
+auth:
+  # Authenticated SSRF testing — the SSRF endpoints are typically
+  # behind authentication.
+  method: cookie
+  cookies:
+    - name: session
+      value: "REDACTED_AT_RUNTIME"
+
+  # No multi-principal testing for SSRF. The framework uses the
+  # single auth method configured above.
+  principals: []
+
+reporting:
+  output_dir: reports
+  formats: [markdown, json, html]
+  redact_secrets: true
+
+# ACTIVE profile permits the ssrf check.
+profile: active

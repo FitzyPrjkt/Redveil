@@ -1,0 +1,36 @@
+target:
+  base_url: https://staging.example.com
+  name: Staging Environment
+  description: Authorized security assessment of the public staging surface.
+scope:
+  allowed_hosts:
+    - staging.example.com
+    - api-staging.example.com
+  allowed_paths:
+    - /api/*
+    - /account/*
+    - /public/*
+  excluded_paths:
+    - /logout
+    - /api/v1/payments/*
+    - /admin/production/*
+  follow_redirects: true
+  max_redirects: 5
+limits:
+  requests_per_second: 2
+  max_requests: 500
+  timeout_seconds: 10
+  max_response_size_bytes: 5000000
+authorization:
+  active_testing: true
+  acknowledged_safety_terms: true
+  out_of_band_callback_domain: oast.example
+auth:
+  method: cookie
+  cookies:
+    - name: session
+      value: "REDACTED_AT_RUNTIME"
+reporting:
+  output_dir: reports
+  formats: [markdown, json]
+profile: low_impact

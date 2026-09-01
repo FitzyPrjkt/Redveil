@@ -1,0 +1,22 @@
+target:
+  base_url: http://127.0.0.1:5000
+  name: Local Lab
+scope:
+  allowed_hosts:
+    - 127.0.0.1
+  allowed_paths:
+    - /*
+  excluded_paths: []
+limits:
+  requests_per_second: 10
+  max_requests: 200
+  timeout_seconds: 5
+authorization:
+  active_testing: false
+  acknowledged_safety_terms: false
+auth:
+  method: none
+reporting:
+  output_dir: reports
+  formats: [markdown, json]
+profile: passive

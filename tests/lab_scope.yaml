@@ -1,0 +1,44 @@
+target:
+  base_url: http://127.0.0.1:5000
+  name: Local Lab (E2E)
+
+scope:
+  allowed_hosts:
+    - 127.0.0.1
+  allowed_paths:
+    - /*
+
+limits:
+  requests_per_second: 20
+  max_requests: 200
+  timeout_seconds: 5
+
+authorization:
+  active_testing: true
+  acknowledged_safety_terms: true
+  out_of_band_callback_domain: oast.lab.local
+
+auth:
+  method: cookie
+  cookies:
+    - name: session
+      value: "1"  # Default principal
+  principals:
+    - name: "Account A (alice)"
+      cookies:
+        - name: session
+          value: "1"
+    - name: "Account B (bob)"
+      cookies:
+        - name: session
+          value: "2"
+    - name: "Account C (admin)"
+      cookies:
+        - name: session
+          value: "3"
+
+profile: low_impact
+
+reporting:
+  output_dir: reports
+  formats: [markdown, json, html]

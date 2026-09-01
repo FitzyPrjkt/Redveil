@@ -1,0 +1,101 @@
+# redveil scope configuration: staging environment (no auth, passive)
+#
+# Use this template when:
+#   - You are scanning a staging surface you own or are authorized to test.
+#   - No authentication is required (the surface is public).
+#   - You want PASSIVE checks only (no payload injection, no preflights
+#     that change server state).
+#
+# Quickstart:
+#   redveil scan https://staging.example.com --scope examples/scope.staging.yaml
+#
+# Replace "staging.example.com" with your actual target host. Everything
+# below is conservative and ready to adapt.
+
+target:
+  # The only URL redveil will hit. Required.
+  base_url: https://staging.example.com
+  # Optional human-readable name used as the report directory and in the
+  # report header.
+  name: Staging Environment
+  # Optional description, included in the report metadata.
+  description: Authorized security assessment of the public staging surface.
+
+scope:
+  # Explicit allowlist of hosts redveil is permitted to send requests to.
+  # Empty list rejects everything. Case-insensitive. Subdomains do not
+  # implicitly match: "staging.example.com" does not allow
+  # "api.staging.example.com" — add it explicitly.
+  allowed_hosts:
+    - staging.example.com
+    - api-staging.example.com
+
+  # Glob patterns the request path must match. Empty list means
+  # "allow all paths on the allowed hosts". Patterns use fnmatch syntax.
+  # Restrict this if you only want to scan a subset of the surface.
+  allowed_paths:
+    - /api/*
+    - /account/*
+    - /public/*
+
+  # Glob patterns that ALWAYS WIN over allowed_paths. Use this for
+  # logout, payment endpoints, or anything else the assessment must
+  # not touch.
+  excluded_paths:
+    - /logout
+    - /api/v1/payments/*
+    - /admin/production/*
+
+  # Whether to follow 3xx redirects. When true, each hop is re-validated
+  # against this scope. Default: true.
+  follow_redirects: true
+  # Maximum redirect depth before the chain is rejected. Prevents
+  # redirect-loop DoS. Default: 5.
+  max_redirects: 5
+
+limits:
+  # Token-bucket rate in requests per second. Be polite to the target.
+  requests_per_second: 2
+  # Hard cap on total outbound requests per scan. Once reached, further
+  # send() calls raise an error.
+  max_requests: 500
+  # Request timeout in seconds.
+  timeout_seconds: 10
+  # Maximum response body size in bytes. Larger bodies are truncated.
+  max_response_size_bytes: 5000000  # 5 MB
+  # Concurrency cap on in-flight requests.
+  max_concurrent_requests: 5
+
+authorization:
+  # ACTIVE checks (time-based blind SQLi, OOB SSRF, authenticated IDOR
+  # across multiple test principals, time-based CMDi). Leave false for a
+  # purely PASSIVE staging scan.
+  active_testing: false
+  # Operator's OOB callback domain for blind SSRF / blind injection
+  # confirmation. Only used when active_testing=true. Must be a domain
+  # the operator controls (e.g. an interactsh / OAST instance).
+  out_of_band_callback_domain: null
+  # Explicit acknowledgement that the operator has read and accepted
+  # the safety model. Required when active_testing=true; the framework
+  # rejects the config at load time if missing.
+  acknowledged_safety_terms: false
+
+auth:
+  # Anonymous (no credentials). The staging environment in this example is
+  # public.
+  method: none
+
+reporting:
+  # Output directory. Reports are written to
+  # <output_dir>/<target.name or hostname>/.
+  output_dir: reports
+  # Renderers. markdown and json are always on; html is always on for
+  # write_report() — this list is informational.
+  formats: [markdown, json, html]
+  # Redact Authorization / Cookie / custom header values in report
+  # artifacts. Strongly recommended.
+  redact_secrets: true
+
+# Safety profile ceiling. PASSIVE means checks whose required profile
+# is PASSIVE will run; LOW_IMPACT and ACTIVE checks will be skipped.
+profile: passive

@@ -1,0 +1,20 @@
+target:
+  base_url: https://example.com
+  name: Example Staging
+scope:
+  allowed_hosts:
+    - example.com
+    - api.example.com
+  allowed_paths:
+    - /api/*
+    - /account/*
+  excluded_paths:
+    - /logout
+    - /delete/*
+limits:
+  requests_per_second: 2
+  max_requests: 500
+authorization:
+  active_testing: false
+  acknowledged_safety_terms: false
+profile: passive

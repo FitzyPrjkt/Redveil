@@ -1,0 +1,110 @@
+# redveil scope configuration: multi-principal (BOLA / IDOR testing)
+#
+# Use this template when:
+#   - You have multiple test accounts provisioned by the application
+#     owner.
+#   - You are authorized to test for Broken Object Level Authorization
+#     (BOLA / IDOR): one principal should not be able to access another
+#     principal's resources.
+#   - The bola-idor check will replay the same request as each
+#     principal in turn and diff the responses.
+#
+# Quickstart:
+#   redveil scan https://app.example.com --scope examples/scope.multi-principal.yaml
+#
+# IMPORTANT: replace every REDACTED_AT_RUNTIME placeholder with real
+# credentials. Do not commit real credentials to version control.
+
+target:
+  base_url: https://app.example.com
+  name: BOLA Multi-Principal Assessment
+  description: Authorized BOLA/IDOR testing across two test accounts.
+
+scope:
+  allowed_hosts:
+    - app.example.com
+
+  # Restrict to endpoints that take an object identifier — the surface
+  # where BOLA is meaningful. The "/api/users/<id>" pattern is the
+  # canonical target.
+  allowed_paths:
+    - /api/users/*
+    - /api/orders/*
+    - /api/documents/*
+    - /api/invoices/*
+
+  # Logout, account deletion, payment endpoints — never touch these.
+  excluded_paths:
+    - /api/auth/*
+    - /api/payments/*
+    - /api/admin/*
+
+  follow_redirects: true
+  max_redirects: 5
+
+limits:
+  # Multi-principal testing multiplies request volume by the number
+  # of principals. Keep RPS modest.
+  requests_per_second: 2
+  # Higher cap to accommodate multi-principal replay.
+  max_requests: 800
+  timeout_seconds: 10
+  max_response_size_bytes: 5000000
+  max_concurrent_requests: 4
+
+authorization:
+  # BOLA testing is classified as ACTIVE in redveil's safety model
+  # because it requires authenticated access across multiple
+  # accounts. Set both flags together — the framework rejects the
+  # config at load time otherwise.
+  active_testing: true
+  out_of_band_callback_domain: null
+  # Explicit acknowledgement that the operator has read and accepted
+  # the safety model. Required when active_testing=true.
+  acknowledged_safety_terms: true
+
+auth:
+  # The single-principal auth block is required by the schema but is
+  # not used by the bola-idor check itself. The check iterates over
+  # auth.principals below.
+  method: cookie
+  cookies:
+    # The "victim" principal — also the default for non-multi-principal
+    # checks.
+    - name: session
+      value: "REDACTED_VICTIM_COOKIE"
+
+  # Multi-principal auth for BOLA/IDOR. The bola-idor check will
+  # replay the same request as each principal in turn. Each principal
+  # must have at least one of cookies, bearer_token, or basic auth.
+  principals:
+    - name: victim-alice
+      # User account #1 — owned by Alice. The attacker-principal below
+      # should NOT be able to read Alice's resources.
+      cookies:
+        - name: session
+          value: "REDACTED_ALICE_COOKIE"
+
+    - name: attacker-bob
+      # User account #2 — owned by Bob. This is the account from which
+      # the IDOR attempt originates.
+      cookies:
+        - name: session
+          value: "REDACTED_BOB_COOKIE"
+
+    # Optional third principal — useful for "horizontal" testing
+    # (same role, different data) where two same-role accounts
+    # should not see each other's data.
+    # - name: witness-carol
+    #   cookies:
+    #     - name: session
+    #       value: "REDACTED_CAROL_COOKIE"
+
+reporting:
+  output_dir: reports
+  formats: [markdown, json, html]
+  redact_secrets: true
+
+# ACTIVE profile allows the bola-idor check, which requires
+# multi-principal auth.
+profile: active
