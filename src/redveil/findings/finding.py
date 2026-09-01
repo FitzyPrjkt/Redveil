@@ -60,6 +60,18 @@ class Finding(BaseModel):
 
     summary: str
     technical_explanation: str
+    # Root cause identifier. Multiple findings that share the same
+    # root_cause (e.g., "missing-csp-header" or "bola-missing-ownership-check")
+    # are clustered into one report-level finding with many evidence items.
+    # The check that produces a finding should set this to a normalized
+    # lowercase string. If None, the dedup is per-endpoint (the old behavior).
+    root_cause: str | None = None
+    # Cluster metadata: when this finding is the head of a cluster, these
+    # are populated. affected_endpoints is the list of distinct endpoint
+    # paths where the same root cause was observed. cluster_size is the
+    # number of merged findings.
+    cluster_size: int = 1
+    affected_endpoints: list[str] = Field(default_factory=list)
     # Reproducibility: a sanitized recipe to re-trigger the finding. Filled
     # by the check that produced the finding. Optional: checks that can't
     # build a recipe (e.g., purely observational) leave this None.

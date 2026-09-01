@@ -721,7 +721,30 @@ class SessionCookieCheck(Check):
             cwe=self._cwes_for_subkind(subkind),
             owasp=self._owasp_for_subkind(subkind),
             replay_recipe=recipe_dict,
+            # Set root_cause so the dedup can cluster same-issue findings.
+            # Two findings on different endpoints with the same root_cause
+            # get merged into one cluster finding.
+            root_cause=self._root_cause_for_subkind(subkind, candidate.get("cookie_name", "")),
         )
+
+    def _root_cause_for_subkind(self, subkind: str, cookie_name: str) -> str:
+        """Normalize the root cause identifier for clustering.
+
+        Two findings with the same root_cause get merged regardless of
+        endpoint. E.g. "Missing HttpOnly" on / and /admin become one
+        cluster finding, not two.
+        """
+        if subkind in {"xss_steals_session", "httponly_missing_no_xss"}:
+            return "session-cookie-missing-httponly"
+        if subkind in {"csrf_via_xss", "samesite_missing"}:
+            return "session-cookie-missing-samesite"
+        if subkind == "secure_missing_over_https":
+            return "session-cookie-missing-secure"
+        if subkind == "weak_token":
+            return "session-cookie-weak-token-entropy"
+        if subkind == "token_in_response_body":
+            return "token-leakage-in-response"
+        return f"session-cookie-issue:{subkind}"
 
     def _signals_for_subkind(
         self, subkind: str, candidate: dict
