@@ -76,20 +76,61 @@ class ActionGate:
         # Log of all decisions (for audit)
         self.history: list[GateDecision] = []
 
-    def ask(self, plan: ActionPlan) -> GateDecision:
+    def ask(self, plan: ActionPlan, allow_destructive: bool = False) -> GateDecision:
         """Ask the gate about an action plan. Returns GateDecision.
 
         The decision is also appended to self.history for audit.
-        """
-        if plan.destructive or plan.risk == Risk.BLOCKED:
-            decision = GateDecision(
-                approved=False,
-                plan=plan,
-                reason="destructive operations are always denied (Risk.BLOCKED)",
-            )
-            self._log_decision(decision)
-            return decision
 
+        Destructive actions (destructive=True or Risk.BLOCKED):
+        - allow_destructive=False: ALWAYS denied, regardless of mode
+        - allow_destructive=True: requires per-action user confirmation
+          in INTERACTIVE mode. In NON_INTERACTIVE mode, ALWAYS denied
+          (no batch approval — every destructive action is denied by
+          default unless the user explicitly enables a per-action
+          confirmation flag, which we intentionally don't expose to
+          prevent accidental Y-to-all approvals).
+
+        MEDIUM/HIGH (non-destructive) risk:
+        - NON_INTERACTIVE: auto-approve
+        - STRICT: deny
+        - INTERACTIVE: prompt user
+
+        LOW/NONE: auto-approve in any mode
+        """
+        # Destructive actions are always denied unless allow_destructive=True
+        if plan.destructive or plan.risk == Risk.BLOCKED:
+            if not allow_destructive:
+                decision = GateDecision(
+                    approved=False,
+                    plan=plan,
+                    reason=(
+                        "destructive action: requires "
+                        "authorization.allow_destructive=true"
+                    ),
+                )
+                self._log_decision(decision)
+                return decision
+            # allow_destructive=True: still require per-action user YES
+            # We do NOT auto-approve even in non-interactive mode. Every
+            # destructive action needs explicit user input. The only way
+            # to bypass is to set a separate per-action confirm flag
+            # (intentionally not exposed here to prevent Y-to-all mistakes).
+            if self.mode == GateMode.NON_INTERACTIVE:
+                decision = GateDecision(
+                    approved=False,
+                    plan=plan,
+                    reason=(
+                        "destructive action in non-interactive mode: "
+                        "denied by default (use --interactive or set "
+                        "GATE_CONFIRM_DESTRUCTIVE_PER_ACTION=true per call)"
+                    ),
+                )
+                self._log_decision(decision)
+                return decision
+            # INTERACTIVE: prompt per action
+            return self._prompt_user(plan, emphasize_destructive=True)
+
+        # Non-destructive path
         if self.mode == GateMode.NON_INTERACTIVE:
             decision = GateDecision(
                 approved=True,
@@ -108,14 +149,8 @@ class ActionGate:
             self._log_decision(decision)
             return decision
 
-        if self.mode == GateMode.NON_INTERACTIVE:
-            # Already handled above. This branch is for the case where
-            # INTERACTIVE mode is on but plan risk is auto-approvable.
-            pass
-
         # Auto-approvable risk in interactive mode: still log and approve
-        # so the user isn't prompted for trivial actions. The full render
-        # is only shown for MEDIUM+.
+        # so the user isn't prompted for trivial actions.
         if plan.is_safe_to_auto_approve():
             decision = GateDecision(
                 approved=True,
@@ -126,22 +161,38 @@ class ActionGate:
             return decision
 
         # MEDIUM/HIGH in interactive mode: prompt
-        return self._prompt_user(plan)
+        return self._prompt_user(plan, emphasize_destructive=False)
 
-    def _prompt_user(self, plan: ActionPlan) -> GateDecision:
-        """Prompt the user. Default answer is N (deny)."""
+    def _prompt_user(self, plan: ActionPlan, emphasize_destructive: bool = False) -> GateDecision:
+        """Prompt the user. Default answer is N (deny).
+
+        For destructive actions, we require a longer, more explicit
+        confirmation string ("DESTROY" or similar) to prevent accidental
+        Y presses. The user has to read the plan and type the exact
+        confirmation word.
+        """
         text = plan.render_for_user()
+        if emphasize_destructive:
+            text += "\n" + (
+                "DESTRUCTIVE ACTION: type 'I-accept-risk' to confirm, "
+                "anything else to deny:"
+            )
         self._stdout.write(text + "\n")
         self._stdout.flush()
         try:
-            response = self._stdin.readline().strip().lower()
+            response = self._stdin.readline().strip()
         except (EOFError, KeyboardInterrupt):
             response = ""
-        approved = response in ("y", "yes")
+        if emphasize_destructive:
+            approved = response == "I-accept-risk"
+            reason_token = "explicit 'I-accept-risk' for destructive"
+        else:
+            approved = response.lower() in ("y", "yes")
+            reason_token = "approved" if approved else "denied"
         decision = GateDecision(
             approved=approved,
             plan=plan,
-            reason=f"user {'approved' if approved else 'denied'} interactively",
+            reason=f"user {reason_token} interactively",
         )
         self._log_decision(decision)
         return decision

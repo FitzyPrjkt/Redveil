@@ -156,18 +156,87 @@ def test_gate_strict_allows_low():
     assert decision
 
 
-def test_gate_blocks_destructive_even_in_non_interactive():
-    """Destructive actions are NEVER approved, in any mode."""
-    for mode in (GateMode.NON_INTERACTIVE, GateMode.INTERACTIVE, GateMode.STRICT):
-        gate = ActionGate(mode=mode, stdin=io.StringIO("y\n"), stdout=io.StringIO())
-        plan = ActionPlan(
-            action_id="x", description="x", risk=Risk.LOW,
-            target="https://t.com", purpose="x", expected_effect="x",
-            destructive=True,
-        )
-        decision = gate.ask(plan)
-        assert not decision
-        assert "BLOCKED" in decision.reason or "destructive" in decision.reason
+def test_gate_blocks_destructive_in_non_interactive_even_with_unlock():
+    """Destructive actions are NEVER auto-approved, even with allow_destructive=True.
+    Each one needs explicit user confirmation per-action — no Y-to-all."""
+    gate = ActionGate(mode=GateMode.NON_INTERACTIVE)
+    plan = ActionPlan(
+        action_id="x", description="x", risk=Risk.LOW,
+        target="https://t.com", purpose="x", expected_effect="x",
+        destructive=True,
+    )
+    # allow_destructive=True but mode is non-interactive → still denied
+    decision = gate.ask(plan, allow_destructive=True)
+    assert not decision
+    assert "non-interactive" in decision.reason
+
+
+def test_gate_destructive_requires_explicit_i_accept_risk():
+    """Destructive in interactive mode requires 'I-accept-risk' string."""
+    fake_stdin = io.StringIO("y\n")  # plain 'y' should NOT work
+    fake_stdout = io.StringIO()
+    gate = ActionGate(
+        mode=GateMode.INTERACTIVE, stdin=fake_stdin, stdout=fake_stdout,
+    )
+    plan = ActionPlan(
+        action_id="x", description="x", risk=Risk.MEDIUM,
+        target="https://t.com", purpose="x", expected_effect="x",
+        destructive=True,
+    )
+    decision = gate.ask(plan, allow_destructive=True)
+    assert not decision  # 'y' alone is not enough
+
+
+def test_gate_destructive_approved_with_explicit_string():
+    """Destructive in interactive mode approved only with 'I-accept-risk'."""
+    fake_stdin = io.StringIO("I-accept-risk\n")
+    fake_stdout = io.StringIO()
+    gate = ActionGate(
+        mode=GateMode.INTERACTIVE, stdin=fake_stdin, stdout=fake_stdout,
+    )
+    plan = ActionPlan(
+        action_id="x", description="x", risk=Risk.MEDIUM,
+        target="https://t.com", purpose="x", expected_effect="x",
+        destructive=True,
+    )
+    decision = gate.ask(plan, allow_destructive=True)
+    assert decision
+
+
+def test_gate_no_y_to_all():
+    """Two destructive actions in a row: each must be confirmed separately."""
+    fake_stdin = io.StringIO("I-accept-risk\nn\n")  # first yes, second no
+    fake_stdout = io.StringIO()
+    gate = ActionGate(
+        mode=GateMode.INTERACTIVE, stdin=fake_stdin, stdout=fake_stdout,
+    )
+    plan1 = ActionPlan(action_id="1", description="d1", risk=Risk.HIGH,
+                       target="https://t.com", purpose="x", expected_effect="x",
+                       destructive=True)
+    plan2 = ActionPlan(action_id="2", description="d2", risk=Risk.HIGH,
+                       target="https://t.com", purpose="x", expected_effect="x",
+                       destructive=True)
+    d1 = gate.ask(plan1, allow_destructive=True)
+    d2 = gate.ask(plan2, allow_destructive=True)
+    assert d1  # first approved
+    assert not d2  # second denied (user said n)
+    # The gate prompts for BOTH, no batch approval
+    assert len(gate.history) == 2
+
+
+def test_gate_blocks_destructive_when_unlock_disabled():
+    """When allow_destructive=False, destructive is always denied."""
+    gate = ActionGate(mode=GateMode.INTERACTIVE,
+                      stdin=io.StringIO("I-accept-risk\n"),
+                      stdout=io.StringIO())
+    plan = ActionPlan(
+        action_id="x", description="x", risk=Risk.MEDIUM,
+        target="https://t.com", purpose="x", expected_effect="x",
+        destructive=True,
+    )
+    decision = gate.ask(plan, allow_destructive=False)
+    assert not decision
+    assert "allow_destructive" in decision.reason
 
 
 def test_gate_blocks_risk_blocked_sentinel():
@@ -175,7 +244,7 @@ def test_gate_blocks_risk_blocked_sentinel():
     gate = ActionGate(mode=GateMode.NON_INTERACTIVE)
     plan = ActionPlan(action_id="x", description="x", risk=Risk.BLOCKED,
                       target="https://t.com", purpose="x", expected_effect="x")
-    decision = gate.ask(plan)
+    decision = gate.ask(plan, allow_destructive=True)
     assert not decision
 
 

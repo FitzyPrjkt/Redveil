@@ -100,6 +100,30 @@ class AuthorizationConfig(BaseModel):
     active_testing: bool = False
     out_of_band_callback_domain: str | None = None  # e.g. "oast.example"
     acknowledged_safety_terms: bool = False
+    # Destructive operations (reverse shell, persistence, data destruction)
+    # are ALWAYS denied by default. To unlock them, the operator must:
+    # 1. Set this flag to True (explicit, in config)
+    # 2. Have active_testing AND acknowledged_safety_terms both True
+    # 3. Have the ActionGate ask the user PER ACTION (no batch approval)
+    # Even when unlocked, destructive actions are NEVER auto-approved
+    # in non-interactive mode. They require explicit user confirmation
+    # via stdin, and in non-interactive mode the default is DENY.
+    allow_destructive: bool = False
+
+    @model_validator(mode="after")
+    def _destructive_requires_full_acknowledgement(self) -> AuthorizationConfig:
+        if self.allow_destructive:
+            if not self.active_testing:
+                raise ValueError(
+                    "authorization.allow_destructive=true requires "
+                    "authorization.active_testing=true"
+                )
+            if not self.acknowledged_safety_terms:
+                raise ValueError(
+                    "authorization.allow_destructive=true requires "
+                    "authorization.acknowledged_safety_terms=true"
+                )
+        return self
 
     @model_validator(mode="after")
     def _active_requires_acknowledgement(self) -> AuthorizationConfig:
