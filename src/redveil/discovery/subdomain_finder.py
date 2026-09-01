@@ -89,7 +89,16 @@ class SubdomainFinder:
             return True
         # Use a dot-boundary suffix match so ``notexample.com`` doesn't match
         # ``example.com``.
-        return h.endswith("." + r)
+        if not h.endswith("." + r):
+            return False
+        # Reject bare-IP "subdomains" (e.g. "127.0.0.1" when root is "127.0.0.1").
+        # Subdomain discovery is about DNS names, not addresses.
+        import re as _re
+        if _re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", h):
+            return False
+        if ":" in h:  # IPv6
+            return False
+        return True
 
     # -- extraction -------------------------------------------------------
 
