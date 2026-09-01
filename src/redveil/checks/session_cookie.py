@@ -49,6 +49,8 @@ from redveil.plugins.base import (
     ValidationResult,
 )
 from redveil.util.urls import join_url
+from redveil.validation.confidence import ConfidenceScorer
+from redveil.validation.oracle import Oracle, Signal, SignalKind
 
 # Token-like query parameter names — common leak vectors.
 _TOKEN_PARAM_NAMES = (
@@ -613,17 +615,17 @@ class SessionCookieCheck(Check):
         }
         severity = severity_map.get(subkind, Severity.MEDIUM)
 
-        # Status from validation
-        confidence_map = {
-            "xss_steals_session": Confidence.HIGH,
-            "csrf_via_xss": Confidence.HIGH,
-            "secure_missing_over_https": Confidence.HIGH,
-            "weak_token": Confidence.HIGH,
-            "token_in_response_body": Confidence.HIGH,
-            "httponly_missing_no_xss": Confidence.LOW,
-            "samesite_missing": Confidence.LOW,
-        }
-        confidence = confidence_map.get(subkind, Confidence.MEDIUM)
+        # Build the signal list for ConfidenceScorer. Each subkind emits
+        # 1-2 signals from different dimensions — the multi-signal
+        # correlation then weights them according to the Oracle class.
+        signals = self._signals_for_subkind(subkind, candidate)
+
+        # Determine Oracle class
+        oracle = self._oracle_for_subkind(subkind)
+
+        # Score via ConfidenceScorer
+        scorer = ConfidenceScorer()
+        confidence = scorer.confidence(signals, oracle)
 
         if subkind in {"httponly_missing_no_xss", "samesite_missing"}:
             status = FindingStatus.LIKELY  # hardening gap, no chain observed
@@ -693,6 +695,88 @@ class SessionCookieCheck(Check):
             cwe=self._cwes_for_subkind(subkind),
             owasp=self._owasp_for_subkind(subkind),
         )
+
+    def _signals_for_subkind(
+        self, subkind: str, candidate: dict
+    ) -> list[Signal]:
+        """Build the signal list for a given subkind.
+
+        Each subkind emits 1-3 signals from different dimensions. The
+        ConfidenceScorer aggregates them and applies the Oracle multiplier.
+        """
+        sigs: list[Signal] = []
+        if subkind == "xss_steals_session":
+            # XSS reflection + missing HttpOnly = direct attack chain
+            sigs.append(Signal(
+                kind=SignalKind.REFLECTION_DIFF,
+                description="canary reflection unescaped in response",
+                weight=1.0, dimension="response",
+            ))
+            sigs.append(Signal(
+                kind="cookie_flag_missing",
+                description=f"cookie '{candidate.get('cookie_name')}' missing HttpOnly",
+                weight=0.8, dimension="response",
+            ))
+        elif subkind == "csrf_via_xss":
+            sigs.append(Signal(
+                kind=SignalKind.REFLECTION_DIFF,
+                description="XSS reflection enables CSRF chain",
+                weight=1.0, dimension="response",
+            ))
+            sigs.append(Signal(
+                kind="cookie_flag_missing",
+                description=f"cookie '{candidate.get('cookie_name')}' SameSite unset/None",
+                weight=0.8, dimension="response",
+            ))
+        elif subkind == "secure_missing_over_https":
+            sigs.append(Signal(
+                kind=SignalKind.HEADER_DIFF,
+                description="HTTPS response but Set-Cookie missing Secure flag",
+                weight=1.0, dimension="response",
+            ))
+        elif subkind == "weak_token":
+            entropy = candidate.get("entropy_bits", 0.0)
+            token_len = candidate.get("token_length", 0)
+            weight = 1.0 if entropy < _ENTROPY_CONFIRMED or token_len < 8 else 0.5
+            sigs.append(Signal(
+                kind=SignalKind.WEAK_TOKEN_ENTROPY,
+                description=f"token entropy {entropy} bits/char, length {token_len}",
+                weight=weight, dimension="behavior",
+            ))
+        elif subkind == "token_in_response_body":
+            sigs.append(Signal(
+                kind=SignalKind.TOKEN_IN_BODY,
+                description="token-like parameter reflected in response",
+                weight=1.0, dimension="response",
+            ))
+        elif subkind == "httponly_missing_no_xss":
+            sigs.append(Signal(
+                kind="cookie_flag_missing",
+                description=f"cookie '{candidate.get('cookie_name')}' missing HttpOnly (no XSS chain observed)",
+                weight=0.4, dimension="response",
+            ))
+        elif subkind == "samesite_missing":
+            sigs.append(Signal(
+                kind="cookie_flag_missing",
+                description=f"cookie '{candidate.get('cookie_name')}' SameSite unset (no CSRF surface observed)",
+                weight=0.4, dimension="response",
+            ))
+        return sigs
+
+    def _oracle_for_subkind(self, subkind: str) -> Oracle:
+        """Pick the Oracle class for a given subkind.
+
+        XSS-steals-session and ownership violations are very strong
+        evidence. Plain flag-missing is weak (could be hardening gap).
+        """
+        if subkind in {"xss_steals_session", "csrf_via_xss"}:
+            return Oracle.STATE_TRANSITION  # both produce attack chain
+        if subkind == "secure_missing_over_https":
+            return Oracle.BODY_CONTENT
+        if subkind in {"weak_token", "token_in_response_body"}:
+            return Oracle.BODY_CONTENT
+        # Hardening gaps — no chain observed
+        return Oracle.STATUS_CODE_ONLY
 
     def _cwes_for_subkind(self, subkind: str) -> list[str]:
         return {
