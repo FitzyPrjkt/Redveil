@@ -2,6 +2,16 @@
 
 web vulnerability scanner. find vulns, validate safely, get a report you can actually send to a dev team.
 
+<!-- Badges -->
+[![PyPI version](https://img.shields.io/pypi/v/redveil.svg)](https://pypi.org/project/redveil/)
+[![Python versions](https://img.shields.io/pypi/pyversions/redveil.svg)](https://pypi.org/project/redveil/#files)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/FitzyPrjkt/Redveil/blob/main/LICENSE)
+[![Tests](https://img.shields.io/badge/tests-1101%20passing-brightgreen.svg)](https://github.com/FitzyPrjkt/Redveil/actions)
+[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
+[![Security: tiered gate](https://img.shields.io/badge/destructive%20ops-tiered%20confirm-orange.svg)](SECURITY.md)
+[![Negative testing](https://img.shields.io/badge/FP%20testing-secure%20fixture-green.svg)](tests/test_negative_testing.py)
+[![Audit log](https://img.shields.io/badge/audit%20log-per%20action%20decision-blue.svg)](src/redveil/validation/gate.py)
+
 ```
 $ pip install redveil
 $ redveil scan https://target.example --scope scope.yaml
@@ -135,7 +145,21 @@ see [CONTRIBUTING.md](CONTRIBUTING.md) for the full plugin spec.
 
 ## status
 
-17 checks, 920 tests passing, 0 known safety violations. actively used against staging environments. not yet battle-tested at scale — feedback and bug reports welcome.
+17 checks, ~1090 tests passing, 0 known safety violations. actively used against staging environments. the framework ships with curated, tested-safe payloads; destructive actions require per-action typed confirmation (no batch approval) and an explicit `allow_destructive: true` unlock in config.
+
+## what makes redveil different from sqlmap / nikto / burp scanner
+
+| Aspect | traditional scanner | redveil |
+|---|---|---|
+| Payload | signature match (e.g. `' OR 1=1 --`) | time-based delay, OOB callback, canary reflection |
+| Action | match pattern → flag | model target → hypothesis → controlled test → multi-signal correlation → confidence-scored finding |
+| Confidence | hardcoded HIGH or LOW | computed: `oracle × (1 + log2(distinct_dims)) × weight − env_penalty − uncertainty` |
+| Reproducibility | not verified | `ReplayRecipe` + `ReplayEngine` runs N samples |
+| FP reduction | none | negative testing, flakiness detection, env awareness, uncertainty propagation |
+| Root cause | one finding per endpoint | clustered across endpoints with same root cause |
+| Destructive | implicit (run anyway) | blocked by default. tiered confirmation L1-L6. no Y-to-all. |
+
+see [USER_GUIDE.md](USER_GUIDE.md) and [docs/architecture.md](docs/architecture.md) for details.
 
 ## license
 

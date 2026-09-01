@@ -269,3 +269,27 @@ class ActionGate:
                 decision.plan.description,
                 decision.reason,
             )
+
+    def audit_log(self) -> list[dict]:
+        """Return the decision history as a JSON-serializable audit log.
+
+        Suitable for inclusion in the report as an appendix so the
+        operator has a record of every gate decision made during the scan.
+        """
+        out: list[dict] = []
+        for d in self.history:
+            entry = {
+                "action_id": d.plan.action_id,
+                "description": d.plan.description,
+                "risk": d.plan.risk.name,
+                "destructive": d.plan.destructive,
+                "approved": d.approved,
+                "reason": d.reason,
+            }
+            if d.plan.destructive_level is not None:
+                entry["destructive_level"] = d.plan.destructive_level.value
+                entry["destructive_label"] = d.plan.destructive_level.label
+            if d.plan.confirm_word:
+                entry["confirm_word"] = d.plan.confirm_word
+            out.append(entry)
+        return out

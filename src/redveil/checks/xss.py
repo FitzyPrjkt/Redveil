@@ -66,7 +66,7 @@ class ReflectedXSSCheck(Check):
         # Optional ActionGate: present the canary probe plan to the user.
         # The gate only blocks MEDIUM+ in interactive mode. Canary probes
         # are LOW risk (no destructive payload) so this is auto-approved.
-        from redveil.validation.risk import ActionPlan, Risk
+        from redveil.validation.risk import ActionPlan, Risk, DestructiveLevel
         plan = ActionPlan(
             action_id="xss-canary-probe",
             description=(
@@ -85,6 +85,13 @@ class ReflectedXSSCheck(Check):
             ),
             max_requests=20,
             timeout_seconds=10.0,
+            # XSS at MAX could enable cookie theft (data_exfiltration = level 1).
+            # We only do canary reflection (level 0, no destructive), so set
+            # destructive=False here. The plan's max_destructive_level is
+            # what XSS could enable if exploited; redveil's check doesn't
+            # do that.
+            destructive=False,
+            destructive_level=DestructiveLevel.DATA_EXFILTRATION,
         )
         if self.deps.gate is not None:
             decision = self.deps.gate.ask(

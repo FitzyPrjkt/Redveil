@@ -38,6 +38,32 @@ runtime assertions in each check verify these on import. the test suite has safe
 
 if you find a code path that does anything destructive, that IS a vulnerability and you should report it.
 
+## destructive action handling (DestructiveLevel 1-6)
+
+redveil classifies potential destruction on a 6-level scale:
+
+| Level | Label | Example |
+|---|---|---|
+| 1 | data_exfiltration | read `/etc/passwd`, dump DB |
+| 2 | data_modification | `UPDATE`, `chmod` |
+| 3 | data_destruction | `rm -rf`, `DROP TABLE` |
+| 4 | persistence | `crontab`, webshell |
+| 5 | lateral_movement | SSH keys, network scan |
+| 6 | takeover | full account takeover, complete RCE |
+
+**Default behavior**:
+- Destructive actions (`destructive=True`) are **denied by default**
+- `max_destructive_level` defaults to `2` (data_modification allowed)
+- Even with `allow_destructive: true`, each destructive action requires
+  per-action typed confirmation: level 3+ requires typing `CONFIRM`,
+  `CONFIRM-LEVEL-4`, etc. or the plan's `confirm_word` (e.g. `rm-rf`).
+  **No Y-to-all.**
+- In non-interactive mode (CI), destructive actions are denied even
+  with `allow_destructive: true`. Use `--interactive` to enable prompts.
+
+this protects against accidental destructive actions, including in
+shared/CI environments where a prompt would be auto-skipped.
+
 ## authorized use only
 
 operators are responsible for ensuring they have permission before scanning a target. redveil includes guards, but the guards only matter if you actually have authorization.
