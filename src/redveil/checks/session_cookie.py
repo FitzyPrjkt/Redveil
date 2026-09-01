@@ -665,6 +665,32 @@ class SessionCookieCheck(Check):
         base = str(self.deps.config.target.base_url)
         parsed = urlparse(base)
 
+        # Build a replay recipe so the finding can be re-triggered. The
+        # request that produced the finding is captured (sanitized).
+        recipe_dict = None
+        original_req = candidate.get("request")
+        original_resp = candidate.get("response")
+        if original_req is not None:
+            from redveil.validation.replay import build_recipe_from_request
+            recipe = build_recipe_from_request(
+                original_req, original_resp,
+                notes=f"Session-cookie finding: {subkind} for cookie '{candidate.get('cookie_name', '?')}'",
+            )
+            # Serialize for the Finding model (which uses dicts)
+            recipe_dict = {
+                "method": recipe.method,
+                "url": recipe.url,
+                "headers": dict(recipe.headers),
+                "body": recipe.body,
+                "expected_status": recipe.expected_status,
+                "expected_body_excerpt": recipe.expected_body_excerpt,
+                "expected_body_length": recipe.expected_body_length,
+                "expected_timing_ms": recipe.expected_timing_ms,
+                "observed_at": recipe.observed_at.isoformat() if recipe.observed_at else None,
+                "notes": recipe.notes,
+                "fingerprint": recipe.fingerprint(),
+            }
+
         return Finding(
             check=CheckRef(
                 id=self.meta.id,
@@ -694,6 +720,7 @@ class SessionCookieCheck(Check):
             remediation=remediation,
             cwe=self._cwes_for_subkind(subkind),
             owasp=self._owasp_for_subkind(subkind),
+            replay_recipe=recipe_dict,
         )
 
     def _signals_for_subkind(

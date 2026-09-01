@@ -60,6 +60,13 @@ class Finding(BaseModel):
 
     summary: str
     technical_explanation: str
+    # Reproducibility: a sanitized recipe to re-trigger the finding. Filled
+    # by the check that produced the finding. Optional: checks that can't
+    # build a recipe (e.g., purely observational) leave this None.
+    replay_recipe: dict | None = None  # serialized ReplayRecipe (sanitized)
+    # Set by ReplayEngine when the finding is replayed for verification.
+    replay_verified: bool = False
+    replay_consistent: bool = True  # whether N replays produced the same signal
     impact: str
 
     evidence_ids: list[str] = Field(default_factory=list)  # references to Evidence
