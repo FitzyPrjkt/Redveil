@@ -49,6 +49,7 @@ class OrchestratorDeps:
     registry: Registry
     config: RedVeilConfig
     http: HttpClient
+    gate: Any = None  # redveil.validation.gate.ActionGate (optional)
 
 
 class Orchestrator:
@@ -75,14 +76,15 @@ class Orchestrator:
         # after the first pass (during run()).
         self._application_model = None
         self._behavior_model = None
-        # ActionGate for active checks. Default NON_INTERACTIVE; operators
-        # can configure via env or pass a custom gate. Destructive
+        # ActionGate for active checks. Use the one provided via deps, or
+        # fall back to NON_INTERACTIVE if none provided. Destructive
         # operations require explicit allow_destructive=true AND
         # per-action approval.
-        from redveil.validation.gate import ActionGate, GateMode
-        self._gate = ActionGate(
-            mode=GateMode.NON_INTERACTIVE,
-        )
+        if deps.gate is not None:
+            self._gate = deps.gate
+        else:
+            from redveil.validation.gate import ActionGate, GateMode
+            self._gate = ActionGate(mode=GateMode.NON_INTERACTIVE)
         self._bind_all_checks()
 
     def _bind_all_checks(self) -> None:
@@ -101,6 +103,8 @@ class Orchestrator:
             behavior_model=self._behavior_model,
             gate=self._gate,
         )
+        for check in self._registry.all():
+            check.bind(deps)
         for check in self._registry.all():
             check.bind(deps)
 

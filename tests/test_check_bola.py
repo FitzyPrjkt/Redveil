@@ -109,11 +109,20 @@ def _bind(check: BOLACheck, cfg: MagicMock, side_effects: list[Response]) -> Mag
     mock_http = MagicMock()
     mock_http._scope = MagicMock()
     mock_http.send = AsyncMock(side_effect=list(side_effects))
+    # Mock the gate (auto-approve)
+    mock_gate = MagicMock()
+    decision = MagicMock()
+    decision.approved = True
+    decision.plan = MagicMock()
+    decision.reason = "test-mock"
+    decision.__bool__ = lambda self: self.approved
+    mock_gate.ask.return_value = decision
     deps = CheckDependencies(
         http=mock_http,
         scope=mock_http._scope,
         config=cfg,
         context=MagicMock(),
+        gate=mock_gate,
     )
     check.bind(deps)
     return mock_http

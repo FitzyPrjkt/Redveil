@@ -27,7 +27,18 @@ def _bind(check, side_effects, active: bool = True, ack: bool = True, has_princi
     else:
         cfg.auth.principals = []
     mock_http.send = AsyncMock(side_effect=side_effects)
-    deps = CheckDependencies(http=mock_http, scope=mock_http._scope, config=cfg, context=MagicMock())
+    # Mock the gate
+    mock_gate = MagicMock()
+    decision = MagicMock()
+    decision.approved = True
+    decision.plan = MagicMock()
+    decision.reason = "test-mock"
+    decision.__bool__ = lambda self: self.approved
+    mock_gate.ask.return_value = decision
+    deps = CheckDependencies(
+        http=mock_http, scope=mock_http._scope, config=cfg, context=MagicMock(),
+        gate=mock_gate,
+    )
     check.bind(deps)
     return mock_http
 

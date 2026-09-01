@@ -193,6 +193,34 @@ class BOLACheck(Check):
         if len(principals) < 2:
             return []
 
+        # Optional ActionGate: present the multi-principal plan to the user.
+        from redveil.validation.risk import ActionPlan, Risk
+        plan = ActionPlan(
+            action_id="bola-multi-principal-probe",
+            description=(
+                "Request the same resource as multiple configured principals "
+                "and compare responses. If principal B can see principal A's "
+                "resource, BOLA is present."
+            ),
+            risk=Risk.MEDIUM,
+            target=str(cfg.target.base_url).rstrip("/") + "/",
+            purpose="Detect BOLA / IDOR by comparing per-principal access to shared resources.",
+            expected_effect="200 OK for the owner; 403/404 for non-owner.",
+            potential_side_effects=(
+                "Logged in server access log as multiple identities.",
+                "May trigger WAF rate limit if many principals tested rapidly.",
+            ),
+            max_requests=len(_IDOR_PATH_PATTERNS) * 3 * max(1, len(principals)),
+            timeout_seconds=10.0,
+        )
+        if self._deps.gate is not None:
+            decision = self._deps.gate.ask(
+                plan,
+                allow_destructive=cfg.authorization.allow_destructive,
+            )
+            if not decision:
+                return []
+
         base = str(cfg.target.base_url).rstrip("/")
         self._captured = {}
         candidates: list[dict[str, Any]] = []

@@ -66,6 +66,20 @@ def scan(
         False, "--active",
         help="Enable ACTIVE checks. Requires acknowledged_safety_terms=true in scope.",
     ),
+    gate_mode: str = typer.Option(
+        "non_interactive", "--gate-mode", "-g",
+        help="ActionGate mode: interactive | non_interactive | strict. "
+             "interactive: prompt before MEDIUM+ actions. "
+             "non_interactive: auto-approve NONE/LOW; deny MEDIUM+ by default. "
+             "strict: auto-deny MEDIUM+ (requires pre-approval).",
+    ),
+    allow_destructive: bool = typer.Option(
+        False, "--allow-destructive",
+        help="EXPLICIT opt-in to unlock destructive actions (replay shell, "
+             "persistence, data destruction). Even when enabled, each "
+             "destructive action requires per-action confirmation "
+             "('I-accept-risk' in interactive mode). NO batch approval.",
+    ),
     output: Path = typer.Option(Path("reports"), "--output", "-o"),
 ):
     """Run a full scan against the target."""
@@ -79,7 +93,8 @@ def scan(
             scope=ScopeConfig(allowed_hosts=[host]),
             limits=LimitsConfig(requests_per_second=rps, max_requests=max_requests),
             authorization=AuthorizationConfig(
-                active_testing=active, acknowledged_safety_terms=active
+                active_testing=active, acknowledged_safety_terms=active,
+                allow_destructive=allow_destructive,
             ),
             profile=profile,
             reporting=ReportingConfig(output_dir=output),
@@ -88,16 +103,17 @@ def scan(
     cfg.limits.requests_per_second = rps
     cfg.limits.max_requests = max_requests
     cfg.authorization.active_testing = active
+    cfg.authorization.allow_destructive = allow_destructive
     cfg.authorization.acknowledged_safety_terms = active
 
     try:
-        asyncio.run(_run_scan(cfg))
+        asyncio.run(_run_scan(cfg, gate_mode=gate_mode))
     except KeyboardInterrupt:
         console.print("[bold red]aborted[/bold red]")
         sys.exit(130)
 
 
-async def _run_scan(cfg: RedVeilConfig) -> None:
+async def _run_scan(cfg: RedVeilConfig, gate_mode: str = "non_interactive") -> None:
     bus = EventBus()
     renderer = RichRenderer(console=console)
     bus.subscribe_all(renderer)
@@ -105,10 +121,22 @@ async def _run_scan(cfg: RedVeilConfig) -> None:
     target_name = cfg.target.name or str(cfg.target.base_url)
     ctx = ScanContext(target_name=target_name, run_id="scan")
 
+    # ActionGate mode from CLI
+    from redveil.validation.gate import ActionGate, GateMode
+    try:
+        mode_enum = GateMode(gate_mode.lower())
+    except ValueError:
+        from redveil.cli import console as _c
+        _c.print(f"[yellow]unknown gate mode '{gate_mode}', using 'non_interactive'[/yellow]")
+        mode_enum = GateMode.NON_INTERACTIVE
+    action_gate = ActionGate(mode=mode_enum)
+
     scope_ctrl = ScopeController(cfg.scope)
     auth = build_auth_provider(cfg.auth)
     async with HttpClient(scope=scope_ctrl, limits=cfg.limits, auth=auth) as http:
-        deps = OrchestratorDeps(bus=bus, registry=reg, config=cfg, http=http)
+        deps = OrchestratorDeps(
+            bus=bus, registry=reg, config=cfg, http=http, gate=action_gate,
+        )
         orch = Orchestrator(deps, ctx)
         await orch.run()
 

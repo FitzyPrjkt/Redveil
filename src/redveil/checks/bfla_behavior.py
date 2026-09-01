@@ -81,6 +81,34 @@ class BFLABehaviorCheck(Check):
         if not model or len(model.identities) < 1:
             return []
 
+        # Optional ActionGate: present the BFLA probe plan to the user.
+        from redveil.validation.risk import ActionPlan, Risk
+        plan = ActionPlan(
+            action_id="bfla-admin-endpoint-probe",
+            description=(
+                "Send GET requests to known admin-only endpoints using a "
+                "non-admin principal's cookies. Verifies whether "
+                "function-level authorization is enforced."
+            ),
+            risk=Risk.MEDIUM,
+            target=str(self.deps.config.target.base_url).rstrip("/") + "/",
+            purpose="Detect BFLA by checking that non-admin principals cannot access admin-only endpoints.",
+            expected_effect="403 or 401 responses for non-admin; 200 only for admin.",
+            potential_side_effects=(
+                "Logged in server access log.",
+                "May trigger WAF rate limit if many requests sent quickly.",
+            ),
+            max_requests=len(_ADMIN_PATH_PATTERNS) + 5,
+            timeout_seconds=10.0,
+        )
+        if self.deps.gate is not None:
+            decision = self.deps.gate.ask(
+                plan,
+                allow_destructive=self.deps.config.authorization.allow_destructive,
+            )
+            if not decision:
+                return []
+
         # Find a non-admin principal to test with
         non_admin = next(
             (i for i in model.identities.values() if i.role != "admin"),
