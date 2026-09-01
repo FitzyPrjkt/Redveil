@@ -2,6 +2,25 @@
 
 web vulnerability scanner. find vulns, validate safely, get a report you can actually send to a dev team.
 
+> ⚠️ **Installation requires a virtual environment or `pipx`.**
+>
+> Modern Linux distros (Debian 12+, Ubuntu 23.04+, Fedora, etc.) enforce
+> [PEP 668](https://peps.python.org/pep-0668/) and block system-wide
+> `pip install` with the error
+> `error: externally-managed-environment`. Use one of these:
+>
+> ```bash
+> # Option 1: pipx (recommended, installs to isolated env, command globally available)
+> pipx install redveil
+>
+> # Option 2: python venv
+> python3 -m venv ~/redveil-env && source ~/redveil-env/bin/activate
+> pip install redveil
+> ```
+>
+> See [USER_GUIDE.md#install](USER_GUIDE.md#install) for distro-specific
+> commands (apt, dnf, pacman, zypper, brew, etc.).
+
 <!-- Badges -->
 [![PyPI version](https://img.shields.io/pypi/v/redveil.svg)](https://pypi.org/project/redveil/)
 [![Python versions](https://img.shields.io/pypi/pyversions/redveil.svg)](https://pypi.org/project/redveil/#files)
@@ -20,11 +39,30 @@ $ redveil list-checks
 
 ## install
 
+**Don't use bare `pip install redveil`** on modern Linux — it'll fail with
+`error: externally-managed-environment` (PEP 668). Use one of:
+
 ```bash
+# pipx (easiest — installs to isolated env, command globally available)
+pipx install redveil
+```
+
+```bash
+# or python venv
+python3 -m venv ~/redveil-env
+source ~/redveil-env/bin/activate
 pip install redveil
 ```
 
-or from source:
+distro-specific:
+- **Debian/Ubuntu**: `sudo apt install pipx && pipx install redveil`
+- **Fedora/RHEL**: `sudo dnf install python3-pipx && pipx install redveil`
+- **Arch/Manjaro**: `sudo pacman -S python-pipx && pipx install redveil`
+- **openSUSE**: `sudo zypper install python3-pipx && pipx install redveil`
+- **macOS**: `brew install pipx && pipx install redveil`
+- **Windows**: `python -m venv redveil-env && .\redveil-env\Scripts\Activate.ps1 && pip install redveil`
+
+or from source (for development):
 
 ```bash
 git clone https://github.com/FitzyPrjkt/Redveil
