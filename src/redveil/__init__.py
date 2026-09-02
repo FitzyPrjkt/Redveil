@@ -8,4 +8,4 @@ with strict scope enforcement and a safety profile system.
 NOT an exploit framework. See README.md for the full safety model.
 """
 
-__version__ = "0.1.0"
+__version__ = "1.9.3"
