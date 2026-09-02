@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "redveil"
-version = "1.9.3"
+version = "1.9.5"
 description = "Production-quality web vulnerability PoC & evidence framework for authorized security testing"
 readme = "README.md"
 license = {text = "MIT"}
