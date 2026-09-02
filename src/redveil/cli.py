@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -23,6 +24,7 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from redveil.config import (
     AuthorizationConfig,
@@ -51,6 +53,14 @@ app = typer.Typer(
     rich_markup_mode="rich",
 )
 console = Console()
+_terminal_width = shutil.get_terminal_size((100, 24)).columns
+
+
+def _centered(text: str, color: str = "yellow", bold: bool = True) -> str:
+    """Return a section header centered on the terminal."""
+    width = max(_terminal_width - 2, 40)
+    style = f"bold {color}" if bold else color
+    return f"[{style}]{text.center(width)}[/]"
 
 
 def _version_callback(value: bool):
@@ -96,14 +106,14 @@ def _show_extended_help(ctx: typer.Context):
     console.print()
 
     # Section 1: Target specification
-    console.print("[bold yellow]TARGET SPECIFICATION[/bold yellow]")
+    console.print(_centered("TARGET SPECIFICATION"))
     console.print("  redveil scan [cyan]<url>[/cyan]                          [dim]# target base URL, e.g. https://staging.example.com[/dim]")
     console.print("  redveil check [cyan]<plugin-id> <url>[/cyan]              [dim]# single check plugin[/dim]")
     console.print("  redveil list-checks                            [dim]# show 17 registered check plugins[/dim]")
     console.print()
 
     # Section 2: SCAN OPTIONS
-    console.print("[bold yellow]SCAN OPTIONS[/bold yellow]  [dim](for 'redveil scan')[/dim]")
+    console.print(_centered("SCAN OPTIONS") + "  [dim](for 'redveil scan')[/dim]")
     console.print("  [cyan]-s[/cyan], --scope FILE              [dim]# path to scope YAML file (recommended)[/dim]")
     console.print("  [cyan]-p[/cyan], --profile PROFILE        [dim]# passive | low_impact | active[/dim]")
     console.print("      --max-requests N             [dim]# hard cap on total requests (default 500)[/dim]")
@@ -112,7 +122,7 @@ def _show_extended_help(ctx: typer.Context):
     console.print()
 
     # Section 3: AUTHORIZATION + GATE
-    console.print("[bold yellow]AUTHORIZATION & ACTION GATE[/bold yellow]")
+    console.print(_centered("AUTHORIZATION & ACTION GATE"))
     console.print("      --active                       [dim]# enable ACTIVE checks (requires acknowledged_safety_terms)[/dim]")
     console.print("  [cyan]-g[/cyan], --gate-mode MODE          [dim]# interactive | non_interactive | strict[/dim]")
     console.print("      --allow-destructive          [dim]# unlock destructive actions (cross-validated)[/dim]")
@@ -120,13 +130,13 @@ def _show_extended_help(ctx: typer.Context):
     console.print()
 
     # Section 4: REPORT COMMANDS
-    console.print("[bold yellow]REPORT COMMANDS[/bold yellow]")
+    console.print(_centered("REPORT COMMANDS"))
     console.print("  redveil findings [cyan]<dir>[/cyan]              [dim]# print summary of saved report[/dim]")
     console.print("  redveil report [cyan]<dir>[/cyan]               [dim]# re-render markdown/HTML from findings.json[/dim]")
     console.print()
 
     # Section 5: SAFETY PROFILES
-    console.print("[bold yellow]SAFETY PROFILES[/bold yellow]")
+    console.print(_centered("SAFETY PROFILES"))
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_column(style="cyan", min_width=12)
     table.add_column()
@@ -137,7 +147,7 @@ def _show_extended_help(ctx: typer.Context):
     console.print()
 
     # Section 6: DESTRUCTIVE LEVELS
-    console.print("[bold yellow]DESTRUCTIVE LEVELS[/bold yellow]  [dim](L1..L6, with --allow-destructive)[/dim]")
+    console.print(_centered("DESTRUCTIVE LEVELS") + "  [dim](L1..L6, with --allow-destructive)[/dim]")
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_column(style="cyan", min_width=4)
     table.add_column()
@@ -151,7 +161,7 @@ def _show_extended_help(ctx: typer.Context):
     console.print()
 
     # Section 7: EXAMPLES
-    console.print("[bold yellow]EXAMPLES[/bold yellow]")
+    console.print(_centered("EXAMPLES"))
     console.print("  [dim]$[/dim] redveil scan https://staging.example.com --scope scope.yaml")
     console.print("  [dim]$[/dim] redveil scan https://target.com --scope scope.yaml --gate-mode interactive")
     console.print("  [dim]$[/dim] redveil check cors-policy https://target.com")
@@ -159,7 +169,7 @@ def _show_extended_help(ctx: typer.Context):
     console.print()
 
     # Section 8: EXIT CODES
-    console.print("[bold yellow]EXIT CODES[/bold yellow]")
+    console.print(_centered("EXIT CODES"))
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_column(style="cyan", min_width=4)
     table.add_column()
@@ -171,11 +181,11 @@ def _show_extended_help(ctx: typer.Context):
     console.print()
 
     # Section 9: DWYOR + docs
-    console.print("[bold yellow]SAFETY[/bold yellow]")
+    console.print(_centered("SAFETY"))
     console.print("  ⚠ DWYOR — Do With Your Own Risk. Authorized security testing only.")
     console.print("    See: https://github.com/FitzyPrjkt/Redveil/blob/main/DWYOR.md")
     console.print()
-    console.print("[bold yellow]DOCS[/bold yellow]")
+    console.print(_centered("DOCS"))
     console.print("  GitHub:  https://github.com/FitzyPrjkt/Redveil")
     console.print("  PyPI:    https://pypi.org/project/redveil/")
     console.print()
